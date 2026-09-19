@@ -23,7 +23,7 @@
 | Put / take | 只靠 aligned signed depth change 判斷；put 對 RGB_B crop 跑一次 YOLO，take 對 RGB_A crop 跑一次 |
 | 第三次變化 | Snapshot B 建立後到抽屜關閉前的後續變化全部忽略，接受實物與 DB 可能不同步的風險 |
 | 提交時機 | 第二次變化結果先暫存；抽屜關閉後才 commit SQLite |
-| 物品模型 | Pretrained YOLOv8 COCO 80-class INT8 TFLite；設定檔只啟用 20 個可放入抽屜的類別 |
+| 物品模型 | COCO 80-class INT8 detector；功能契約仍是 YOLO 的 20 類輸出，但目前已驗證的 i.MX93 runtime adapter 使用 GoPoint SSDLite MobileNet V2（同一 COCO 類別集合），設定檔只啟用 20 個可放入抽屜的類別 |
 | Inventory | SQLite quantity；初始化為空，只由成功提交的 `put/take` 更新 |
 | Untracked take | 記錄 `applied=false` event，但 inventory 不減少 |
 | 錯誤修正 | MVP 不提供 Undo 或人工修改 |
@@ -120,7 +120,7 @@ Voice query
 | `Ref/Edge AI Example/`                              | MQTT edge-event 架構只保留給 Future scaling；MVP 不依賴 PC/MQTT                                                                    |
 | `Presentation/DESIGN.md`                            | 單一 camera owner、latest-frame mailbox、delegate 證據、hardware gate 與 unknown-safe 行為                                         |
 
-重要限制：目前 `Ref/` 沒有附 MiDaS v2.1 Small、YOLOv8 或中文 KWS 的可直接部署 `.tflite` 檔。因此模型取得、量化、Vela 相容性與 benchmark 是實作前 Gate，不可只因文件列出模型名稱就宣稱已在 NPU 執行。
+重要限制：目前 `Ref/` 沒有附 MiDaS v2.1 Small、YOLOv8 或中文 KWS 的可直接部署 `.tflite` 檔。因此模型取得、量化、Vela 相容性與 benchmark 是實作前 Gate，不可只因文件列出模型名稱就宣稱已在 NPU 執行。實機目前選用並驗證 `config/model_manifest.json` 所列的 GoPoint SSDLite；它保留相同的 COCO class/20-class filtering 與 changed-crop contract，SSD decode/NMS 在 Cortex-A55，backbone inference 使用 Ethos-U。
 
 ## 3. 場地與硬體契約
 
@@ -319,16 +319,16 @@ motion_score = percentile(abs_diff within ROI, 95)
 - 若 Snapshot B 尚未建立就關閉，丟棄 transaction。
 - Candidate 已建立後，關閉前的第三次或更多 depth motion 全部忽略，不重建 Snapshot B。
 
-## 7. 兩次深度變化、Changed Crop 與 YOLOv8
+## 7. 兩次深度變化、Changed Crop 與 COCO detector
 
 ### 7.1 Model contract
 
-- Variant：可部署至 i.MX93 的 YOLOv8 nano-class COCO model。
-- Input：INT8 TFLite；實際 shape 由 model metadata 讀取。
-- Runtime：`tflite_runtime`；i.MX93 優先載入 `/usr/lib/libethosu_delegate.so`。
-- NPU model 必須先經 Vela；YOLO decode 與 NMS 可在 A55 執行。
-- Labels 必須直接由同版 model artifact 取得，禁止手寫另一份不同順序的 80-class list。
-- 預設 detection confidence `0.50`、NMS IoU `0.45`；兩者是實機 calibration knobs。
+- 功能 contract：可部署至 i.MX93 的 COCO 80-class detector；目前 runtime 選用已由 GoPoint 驗證的 SSDLite MobileNet V2，而非未完成 board validation 的 YOLOv8 reference。
+- Input：GoPoint uint8 TFLite `[1,300,300,3]`；輸出為 1917 個 box 與 91-class raw logits。
+- Runtime：`tflite_runtime`；i.MX93 載入 `/usr/lib/libethosu_delegate.so`。
+- Vela artifact 的 backbone 由 Ethos-U 執行；SSD decode、sigmoid、label filtering 與 NMS 在 A55。
+- Labels 與 `box_priors.txt` 必須直接由同版 model artifact 取得，禁止手寫另一份不同順序的 label map。
+- 預設 detection confidence `0.50`、NMS IoU `0.50`；兩者是實機 calibration knobs。
 
 ### 7.2 Snapshot contract
 
@@ -379,13 +379,13 @@ signed_change = median(delta within M)
 
 此 MVP 不以 A/B 雙 YOLO 驗證 direction。透明、非常薄或與抽屜底 depth 差太小的物品可能無法通過 direction gate。
 
-### 7.5 Changed-crop YOLO
+### 7.5 Changed-crop detector
 
-- Crop 以 aspect-ratio-preserving letterbox 轉成 model input。
+- 唯一 changed component 先轉成 square crop，再直接 resize 到 GoPoint 的 300x300 input；不把整層或完整 drawer ROI 傳入 detector。
 - 只保留 `enabled_classes.json` 的 20 類。
 - Detection confidence、NMS IoU 與 changed-mask overlap threshold 都是 Gate 0 後凍結的 calibration knobs。
 - 合法結果只能有一個 enabled class；零個為 `unsupported_or_occluded`，多個為 `multiple_items`。
-- 每個 transaction 最多一次 YOLO inference；不建立整層 detection set 或 class-count diff。
+- 每個 transaction 最多一次 detector inference；不建立整層 detection set 或 class-count diff。
 
 ### 7.6 Candidate 與關閉後提交
 

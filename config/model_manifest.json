@@ -1,5 +1,5 @@
 {
-  "manifest_version": "simulation-0.1",
+  "manifest_version": "hardware-probe-0.3",
   "target": "frdm-imx93",
   "runtime_policy": "edge_only",
   "depth": {
@@ -8,18 +8,28 @@
     "sha256": "2719ff97aba7b31f61007b85162a6cb34dc1895e7b8e9eb102a90b861c6d7aac",
     "vela_compiled": true,
     "near_is_positive": true,
-    "status": "downloaded_pending_board_delegate_benchmark"
+    "status": "board_nnstreamer_delegate_validated"
   },
   "detector": {
-    "model": "../models/yolov8n_coco_int8.tflite",
-    "labels": "../models/coco_labels.txt",
-    "source": "https://huggingface.co/EdgeFirst/yolov8-det/resolve/main/tflite/yolov8n-det-int8.tflite",
-    "sha256": "357ffdc968542da6c74f3a83eb566a85be4f33663cb5b866521bcc80354e237c",
-    "format": "tflite_int8_coco_80",
-    "vela_compiled": false,
-    "status": "downloaded_pending_imx93_vela_and_decode_validation",
+    "backend": "GoPoint_NNStreamer_SSDLite",
+    "model": "../models/ssdlite_mobilenet_v2_coco_quant_uint8_float32_no_postprocess_vela.tflite",
+    "labels": "../models/coco_labels_list.txt",
+    "box_priors": "../models/box_priors.txt",
+    "source": "NXP GoPoint object_detection SSDLite MobileNet V2 COCO",
+    "sha256": "57d7506f0c52ee4d910b24002bcdaebd2cb11552796161762568b33221749234",
+    "format": "ssdlite_mobilenet_v2_coco_91_logits_no_postprocess",
+    "vela_compiled": true,
+    "status": "board_ethosu_delegate_validated",
+    "delegate": "/usr/lib/libethosu_delegate.so",
+    "delegation": "1_ethos_u_node_plus_cpu_decode_nms",
+    "observed_python_latency_ms": {"min": 23.58, "median": 23.72, "max": 24.05, "runs": 20},
     "confidence": 0.50,
-    "nms_iou": 0.45
+    "nms_iou": 0.50,
+    "reference_yolov8": {
+      "model": "../models/yolov8n_coco_int8.tflite",
+      "sha256": "357ffdc968542da6c74f3a83eb566a85be4f33663cb5b866521bcc80354e237c",
+      "status": "retained_reference_not_runtime_selected"
+    }
   },
   "kws": {
     "model": null,
