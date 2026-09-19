@@ -1,0 +1,15 @@
+[project]
+name = "smart-drawer-depth"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "ai-edge-litert>=2.2.0",
+    "jkp-depth-anything-v2>=0.1.1",
+    "numpy>=2.5.3",
+    "onnx>=1.23.0",
+    "onnxruntime>=1.30.0",
+    "opencv-python>=5.0.0.93",
+    "requests>=2.34.2",
+    "torch>=2.14.0",
+    "ultralytics>=8.4.155",
+]

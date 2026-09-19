@@ -1,0 +1,9 @@
+[project]
+name = "eiq-depth-metric-small-conversion"
+version = "0.1.0"
+description = "Self-contained eIQ conversion runner for Depth Anything V2 Metric Small"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31,<3",
+]
+

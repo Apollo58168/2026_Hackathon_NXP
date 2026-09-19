@@ -1,2 +1,21 @@
 __pycache__/
 *.py[cod]
+
+# Model weights and compiled inference artifacts. Keep documentation and
+# small label/prior text files available, but never commit binary checkpoints.
+*.pt
+*.pth
+*.tflite
+*.onnx
+*.eiq
+*.eiq.json
+*.elf
+*.engine
+*.ckpt
+*.safetensors
+*.h5
+*.pb
+
+# Generated model bundles/calibration archives.
+deploy/**/model/
+deploy/**/calibration/*.zip

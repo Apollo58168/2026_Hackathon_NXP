@@ -1,0 +1,22 @@
+{
+  "format": "eIQ calibration dataset",
+  "input_name": "image",
+  "sample_count": 2,
+  "sample_dtype": "float32",
+  "sample_shape": [1, 3, 518, 518],
+  "layout": "NCHW",
+  "preprocessing": "RGB resize to 518x518; (pixel / 255.0 - ImageNet mean) / ImageNet std",
+  "source_images": [
+    {
+      "name": "IMG_7413.jpeg",
+      "sha256": "64e424886d84fec2598004d3a900863ab3437bb822a9a52434830980fa848c74",
+      "size": [4032, 2268]
+    },
+    {
+      "name": "IMG_7412.jpeg",
+      "sha256": "ea079ccbce5283950398cffcf9c894b46f83a8077ad9882d0db750b110314653",
+      "size": [4032, 2268]
+    }
+  ],
+  "privacy": "Original JPEGs are intentionally excluded; their EXIF may contain location data. The ZIP contains only preprocessed NumPy tensors."
+}

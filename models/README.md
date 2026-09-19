@@ -9,6 +9,8 @@ Downloaded artifacts:
 | `coco_labels_list.txt` | same GoPoint model family | `c7e79c855f73cbba9f33d649d60e1676eb0a974021a41696d1ac0d4b7f7e0211` | 91-entry SSD label map including `???` background placeholders |
 | `box_priors.txt` | same GoPoint model family | `e4e4e6e43a9a8dbedffc7e5902c6ee97c631526234a456bfdb1b1d011d367aa9` | Four-row, 1917-anchor SSD priors |
 | `yolov8n_coco_int8.tflite` | [EdgeFirst YOLOv8 COCO](https://huggingface.co/EdgeFirst/yolov8-det) | `357ffdc968542da6c74f3a83eb566a85be4f33663cb5b866521bcc80354e237c` | Retained reference; not selected because GoPoint's SSDLite path is the verified board path |
+| `movenet_singlepose_lightning_int8.tflite` | [Google MoveNet SinglePose Lightning v4](https://tfhub.dev/google/lite-model/movenet/singlepose/lightning/tflite/int8/4) | `cd7cc22fa946e5d146a7b98d496853e1923e22828d3972d579973f27f91bb105` | Mac CPU wrist-trajectory probe; board deployment not yet validated |
+| `yolov8m.pt` | [Ultralytics YOLOv8m](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8m.pt) | `5d4a90cdc7a21786cc59cd19778e9eafff836df9e2da32524737c7ee6efe4fe5` | Mac validation model for full-frame A/B inventory comparison |
 | `coco_labels.txt` | same YOLO repository | `bd17f1ee35d5f3c862a4894605855abbb9dda4b0621fdb0ac4c2c8c7bb7e730a` | 80 labels for the retained YOLO reference |
 | `reference/lp_kws_detection_en.elf` | [NXP low-power KWS assets](https://github.com/nxp-imx-support/nxp-demo-experience-assets) | `57deace46b2dd9f3089ed2dab023d6ec61b9fa53e75e45a67f64bedb4e5da0c2` | English reference only; not used for Mandarin MVP |
 
