@@ -24,13 +24,19 @@ Ethos-U delegated inference. A 20-run Python adapter benchmark measured
 23.58/23.72/24.05 ms min/median/max on the board; this includes preprocessing
 and postprocessing, not just the NPU kernel.
 
-Hardware probe entry point:
+Hardware entry point:
 
 ```bash
-python3 /root/midas_nnstreamer.py --transaction-roi X Y W H
+fuser -k /dev/video2 2>/dev/null || true
+XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY=wayland-0 \
+  python3 /root/midas_nnstreamer.py --camera /dev/video2 \
+  --model /root/midas_2_1_small_int8_vela.tflite
 ```
 
-`X Y W H` are one fixed 256x256 analysis ROI. The probe captures stable depth
-A/B, aligns B with the ROI border, extracts only the changed square crop, and
-calls the SSDLite adapter once. It intentionally does not claim layer
-calibration or SQLite commit until real drawer baselines are measured.
+`START INIT` clears the two-layer SQLite calibration/inventory and records the
+closed 15-frame depth baseline. The UI then exposes `LAYER 1 INIT` and
+`LAYER 2 INIT`; each starts automatic motion detection and requires three
+stable depth frames. `FINISH INIT` requires layer 2 to be closed, derives
+both drawer ROIs from closed/open depth differences, and saves the sorted
+top-to-bottom baselines. The older `--transaction-roi` mode remains a one-ROI
+changed-crop detector probe.

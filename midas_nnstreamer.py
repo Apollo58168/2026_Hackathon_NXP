@@ -46,6 +46,7 @@ class DepthWindow(Gtk.Window):
         self.frames = 0
         self.started = time.monotonic()
         self.previous_depth = None
+        self.latest_depth = None
         self.depth_change = 0.0
         self.detector = detector
         self.detect_crop = detect_crop
@@ -55,9 +56,22 @@ class DepthWindow(Gtk.Window):
         self.inventory = {1: {}, 2: {}}
         self.status_event = None
         self.probe_result_seen = False
-        self.phase = "INITIALIZATION"
-        self.init_started = False
-        self.phase_button = "START INIT"
+        self.storage = None
+        self.calibrator = None
+        self.calibration_saved = False
+        try:
+            from hardware_calibration import TwoLayerCalibrator
+            from storage import Storage
+
+            self.storage = Storage("/root/smartdrawer.db")
+            self.calibrator = TwoLayerCalibrator()
+            self.load_inventory()
+        except Exception as error:
+            print("hardware state storage unavailable:", error, flush=True)
+        calibrated = self.storage is not None and self.storage.calibration_count() == 2
+        self.phase = "READY" if calibrated else "INITIALIZATION"
+        self.init_started = calibrated
+        self.phase_button = "NEXT PHASE" if calibrated else "START INIT"
         self.detection_done = detector is None or detect_crop is None
 
         self.area = Gtk.DrawingArea()
@@ -127,6 +141,7 @@ class DepthWindow(Gtk.Window):
             print("Unexpected MiDaS output size:", depth.size, flush=True)
             return
         depth = depth.reshape(SIZE, SIZE)
+        self.latest_depth = depth.copy()
         finite = np.isfinite(depth)
         if not finite.any():
             print("MiDaS returned no finite depth", flush=True)
@@ -144,6 +159,11 @@ class DepthWindow(Gtk.Window):
         if self.rgb is None:
             return
         camera_rgb = self.rgb.copy()
+        if self.calibrator is not None and self.calibrator.active:
+            self.calibrator.feed(depth)
+            self.sync_calibration_button()
+            if self.calibrator.completed and not self.calibration_saved:
+                self.finish_calibration()
         if self.transaction_probe is not None and self.analysis_rgb is not None:
             result = self.transaction_probe.feed(depth, self.analysis_rgb.copy())
             if result is not None and not self.probe_result_seen:
@@ -176,10 +196,17 @@ class DepthWindow(Gtk.Window):
     def stage_text(self):
         if self.status_event is not None:
             return self.status_event
+        if self.calibrator is not None and self.calibrator.active:
+            return self.calibrator.message
+        if self.calibrator is not None and (
+                self.calibrator.state == "error" or self.calibrator.state.startswith("ready_")):
+            return self.calibrator.message
         if self.phase == "PUT":
             return "PUT"
         if self.phase == "TAKE":
             return "TAKE"
+        if self.phase == "READY":
+            return "READY"
         if self.init_started:
             return "INITIALIZING"
         if self.transaction_probe is not None:
@@ -193,22 +220,92 @@ class DepthWindow(Gtk.Window):
             return "DETECTING OBJECT"
         return "INITIALIZATION"
 
+    def load_inventory(self):
+        if self.storage is None:
+            return
+        self.inventory = {1: {}, 2: {}}
+        for row in self.storage.inventory_rows():
+            layer = int(row["layer_no"])
+            if layer in self.inventory:
+                self.inventory[layer][str(row["canonical_label"])] = int(row["quantity"])
+
+    def finish_calibration(self):
+        if self.storage is not None:
+            self.storage.finish_initialization(self.calibrator.calibrations)
+            self.storage.set_metadata("depth_calibration_state", "ready")
+            self.storage.set_metadata("near_is_positive", "1")
+            if self.calibrator.closed_depth is not None:
+                import base64
+                import zlib
+
+                payload = zlib.compress(self.calibrator.closed_depth.astype(np.float32).tobytes())
+                self.storage.set_metadata("closed_depth_shape", "%d,%d" % self.calibrator.closed_depth.shape)
+                self.storage.set_metadata("closed_depth_f32_zlib_b64", base64.b64encode(payload).decode("ascii"))
+                self.storage.set_metadata("depth_noise", str(self.calibrator.noise))
+            self.load_inventory()
+        self.calibration_saved = True
+        self.phase = "READY"
+        self.init_started = True
+        self.phase_button = "NEXT PHASE"
+        self.status_event = self.calibrator.message
+
+    def sync_calibration_button(self):
+        labels = {
+            "capturing_closed": "CAPTURING...",
+            "waiting_open_1": "WAIT LAYER 1",
+            "capturing_layer_1": "WAIT LAYER 1",
+            "waiting_open_2": "WAIT LAYER 2",
+            "capturing_layer_2": "WAIT LAYER 2",
+            "ready_layer_1": "LAYER 1 INIT",
+            "ready_layer_2": "LAYER 2 INIT",
+            "ready_finish": "FINISH INIT",
+            "complete": "NEXT PHASE",
+            "error": "RESTART INIT",
+        }
+        if self.calibrator is not None and self.calibrator.state in labels:
+            self.phase_button = labels[self.calibrator.state]
+
     def advance_phase(self):
+        if self.calibrator is None:
+            self.status_event = "CALIBRATION MODULE UNAVAILABLE"
+            self.area.queue_draw()
+            return
+        if self.calibrator.active:
+            return
         self.status_event = None
-        if not self.init_started:
+        state = self.calibrator.state
+        if state in ("idle", "error") and self.phase == "INITIALIZATION":
+            if self.storage is not None:
+                self.storage.clear_for_initialization()
+                self.inventory = {1: {}, 2: {}}
+            self.calibrator.start()
+            self.calibration_saved = False
             self.init_started = True
-            self.phase_button = "NEXT PHASE"
-        elif self.phase == "INITIALIZATION":
+        elif state == "ready_layer_1":
+            if not self.calibrator.begin_layer(1, self.latest_depth):
+                self.status_event = self.calibrator.message
+        elif state == "ready_layer_2":
+            if not self.calibrator.begin_layer(2, self.latest_depth):
+                self.status_event = self.calibrator.message
+        elif state == "ready_finish":
+            if self.calibrator.finish(self.latest_depth):
+                self.finish_calibration()
+            else:
+                self.status_event = self.calibrator.message
+        elif state in ("idle", "complete") and self.phase in ("INITIALIZATION", "READY"):
             self.phase = "PUT"
-            self.phase_button = "NEXT PHASE"
         elif self.phase == "PUT":
             self.phase = "TAKE"
+        self.sync_calibration_button()
+        if self.phase == "TAKE":
             self.phase_button = "DONE"
         self.area.queue_draw()
 
     def on_button_press(self, _widget, event):
         if event.button != 1 or not hasattr(self, "button_rect"):
             return False
+        if self.calibrator is not None and self.calibrator.active:
+            return True
         x, y, width, height = self.button_rect
         if x <= event.x <= x + width and y <= event.y <= y + height:
             self.advance_phase()
@@ -249,6 +346,37 @@ class DepthWindow(Gtk.Window):
             return
         items = self.inventory[self.active_layer]
         current = items.get(detection.label, 0)
+        if self.storage is not None and self.storage.calibration_count() == 2:
+            try:
+                from types import SimpleNamespace
+                from core import Detection, make_candidate
+
+                change = SimpleNamespace(
+                    action=action.lower(),
+                    signed_change=float(result["signed_change"]),
+                    crop=result["crop"],
+                )
+                candidate = make_candidate(
+                    change,
+                    Detection(detection.class_id, detection.label, detection.confidence),
+                    self.active_layer,
+                )
+                self.storage.commit_candidate(candidate)
+                self.load_inventory()
+                items = self.inventory[self.active_layer]
+                if action == "TAKE" and current <= 0:
+                    self.status_event = "TAKE %s: UNTRACKED" % detection.label.upper()
+                    return
+                self.status_event = "%s %s %s LAYER %d" % (
+                    action,
+                    detection.label.upper(),
+                    "->" if action == "PUT" else "<-",
+                    self.active_layer,
+                )
+                return
+            except Exception as error:
+                self.status_event = "INVENTORY ERROR: %s" % error
+                return
         if action == "PUT":
             items[detection.label] = current + 1
             self.status_event = "PUT %s -> LAYER %d" % (detection.label.upper(), self.active_layer)

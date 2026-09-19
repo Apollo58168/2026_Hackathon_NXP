@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
-from .core import Candidate, ENABLED_CLASSES, LayerCalibration
+try:
+    from .core import Candidate, ENABLED_CLASSES, LayerCalibration
+except ImportError:  # board adapter runs this file beside core.py
+    from core import Candidate, ENABLED_CLASSES, LayerCalibration
 
 
 SCHEMA_VERSION = "1"
@@ -142,7 +145,11 @@ class Storage:
         with self.connection:
             self.connection.execute("DELETE FROM inventory")
             self.connection.execute("DELETE FROM drawer")
-            self.connection.execute("DELETE FROM metadata WHERE key IN ('drawer_count', 'initialized_at')")
+            self.connection.execute(
+                "DELETE FROM metadata WHERE key IN ("
+                "'drawer_count', 'initialized_at', 'depth_calibration_state', "
+                "'closed_depth_shape', 'closed_depth_f32_zlib_b64', 'depth_noise')"
+            )
 
     def finish_initialization(self, calibrations: Iterable[LayerCalibration]) -> None:
         calibrations = list(calibrations)
