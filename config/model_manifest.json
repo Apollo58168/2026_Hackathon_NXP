@@ -1,0 +1,50 @@
+{
+  "manifest_version": "simulation-0.1",
+  "target": "frdm-imx93",
+  "runtime_policy": "edge_only",
+  "depth": {
+    "model": "../models/midas_v2_1_small_quant_vela.tflite",
+    "source": "https://huggingface.co/nxp/midas-v2-imx/resolve/main/imx93/lf-6.18.20_2.0.0/midas_v2_1_small_quant_vela.tflite",
+    "sha256": "2719ff97aba7b31f61007b85162a6cb34dc1895e7b8e9eb102a90b861c6d7aac",
+    "vela_compiled": true,
+    "near_is_positive": true,
+    "status": "downloaded_pending_board_delegate_benchmark"
+  },
+  "detector": {
+    "model": "../models/yolov8n_coco_int8.tflite",
+    "labels": "../models/coco_labels.txt",
+    "source": "https://huggingface.co/EdgeFirst/yolov8-det/resolve/main/tflite/yolov8n-det-int8.tflite",
+    "sha256": "357ffdc968542da6c74f3a83eb566a85be4f33663cb5b866521bcc80354e237c",
+    "format": "tflite_int8_coco_80",
+    "vela_compiled": false,
+    "status": "downloaded_pending_imx93_vela_and_decode_validation",
+    "confidence": 0.50,
+    "nms_iou": 0.45
+  },
+  "kws": {
+    "model": null,
+    "status": "blocked_pending_custom_mandarin_vit_model",
+    "source": "NXP VIT Model Generation Tool (Chinese Mandarin, i.MX93, Linux BSP)",
+    "reference_model": "../models/reference/lp_kws_detection_en.elf",
+    "reference_sha256": "57deace46b2dd9f3089ed2dab023d6ec61b9fa53e75e45a67f64bedb4e5da0c2",
+    "note": "The downloaded reference is English-only (12 Speech Commands classes); it cannot satisfy the fixed Mandarin vocabulary."
+  },
+  "semantic": {
+    "catalog": "semantic_catalog.json",
+    "status": "simulation_fixture_only",
+    "runtime": "precomputed_vectors_only",
+    "semantic_min_score": 0.80,
+    "semantic_min_margin": 0.05
+  },
+  "thresholds": {
+    "stable_frame_count": 3,
+    "object_change_threshold": 0.10,
+    "direction_threshold": 0.05,
+    "layer_match_tolerance": 0.08,
+    "min_change_area": 2,
+    "component_merge_gap": 1,
+    "crop_padding": 0.25
+  },
+  "enabled_classes": "enabled_classes.json",
+  "kws_vocabulary": "kws_vocabulary.json"
+}

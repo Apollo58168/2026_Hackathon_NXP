@@ -1,0 +1,25 @@
+{
+  "catalog_version": "coco-80-1",
+  "classes": [
+    {"class_id": 39, "canonical_label": "bottle"},
+    {"class_id": 40, "canonical_label": "wine glass"},
+    {"class_id": 41, "canonical_label": "cup"},
+    {"class_id": 42, "canonical_label": "fork"},
+    {"class_id": 43, "canonical_label": "knife"},
+    {"class_id": 44, "canonical_label": "spoon"},
+    {"class_id": 45, "canonical_label": "bowl"},
+    {"class_id": 46, "canonical_label": "banana"},
+    {"class_id": 47, "canonical_label": "apple"},
+    {"class_id": 49, "canonical_label": "orange"},
+    {"class_id": 48, "canonical_label": "sandwich"},
+    {"class_id": 63, "canonical_label": "laptop"},
+    {"class_id": 64, "canonical_label": "mouse"},
+    {"class_id": 65, "canonical_label": "remote"},
+    {"class_id": 66, "canonical_label": "keyboard"},
+    {"class_id": 67, "canonical_label": "cell phone"},
+    {"class_id": 73, "canonical_label": "book"},
+    {"class_id": 74, "canonical_label": "clock"},
+    {"class_id": 76, "canonical_label": "scissors"},
+    {"class_id": 79, "canonical_label": "toothbrush"}
+  ]
+}

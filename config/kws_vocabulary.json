@@ -1,0 +1,30 @@
+{
+  "status": "blocked_pending_custom_mandarin_vit_model",
+  "wake_word": "Hey 抽屜",
+  "command_window_seconds": 3,
+  "classes": {
+    "bottle": ["瓶子", "水瓶", "bottle"],
+    "wine glass": ["酒杯", "wine glass"],
+    "cup": ["杯子", "cup"],
+    "fork": ["叉子", "fork"],
+    "knife": ["刀子", "knife"],
+    "spoon": ["湯匙", "勺子", "spoon"],
+    "bowl": ["碗", "bowl"],
+    "banana": ["香蕉", "banana"],
+    "apple": ["蘋果", "apple"],
+    "orange": ["橘子", "柳橙", "orange"],
+    "sandwich": ["三明治", "sandwich"],
+    "laptop": ["電腦", "筆電", "notebook", "laptop"],
+    "mouse": ["滑鼠", "mouse"],
+    "remote": ["遙控器", "remote"],
+    "keyboard": ["鍵盤", "keyboard"],
+    "cell phone": ["手機", "電話", "phone", "cell phone"],
+    "book": ["書", "book"],
+    "clock": ["時鐘", "clock"],
+    "scissors": ["剪刀", "scissors"],
+    "toothbrush": ["牙刷", "toothbrush"]
+  },
+  "runtime_audio": "mono_s16le_16000",
+  "model": null,
+  "note": "NXP's public i.MX93 KWS sample is English-only (12 Speech Commands classes). Generate the Mandarin wake-word/command artifact with NXP VIT before hardware acceptance; no PC/cloud fallback is allowed."
+}
