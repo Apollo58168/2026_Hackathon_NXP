@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""C270 -> MiDaS/Ethos-U preview plus one changed-crop GoPoint detector call."""
+"""C270 -> MiDaS/Ethos-U preview plus voted changed-crop detection."""
 import argparse
 import json
 import os
@@ -15,6 +15,8 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, GLib, Gst, Gtk
+
+from depth_denoise import denoise_relative_depth
 
 MODEL = "/opt/gopoint-apps/downloads/midas_v2_1_small_quant_vela.tflite"
 DETECTOR_MODEL = "/opt/gopoint-apps/downloads/ssdlite_mobilenet_v2_coco_quant_uint8_float32_no_postprocess_vela.tflite"
@@ -39,8 +41,9 @@ def cursor_pixbuf():
 
 class DepthWindow(Gtk.Window):
     def __init__(self, camera, model, detector=None, detect_crop=None, detect_after=30,
-                 transaction_probe=None, active_layer=None):
-        super().__init__(title="MiDaS Relative Depth + SSD-Lite")
+                 transaction_probe=None, active_layer=None, bilateral_diameter=5,
+                 bilateral_sigma=0.08):
+        super().__init__(title="MiDaS Relative Depth + voted SSD-Lite")
         self.frame = self.latest = self.rgb = self.analysis_rgb = None
         self.pending = False
         self.frames = 0
@@ -59,12 +62,17 @@ class DepthWindow(Gtk.Window):
         self.storage = None
         self.calibrator = None
         self.calibration_saved = False
+        self.bilateral_diameter = int(bilateral_diameter)
+        self.bilateral_sigma = float(bilateral_sigma)
         try:
             from hardware_calibration import TwoLayerCalibrator
             from storage import Storage
 
             self.storage = Storage("/root/smartdrawer.db")
-            self.calibrator = TwoLayerCalibrator()
+            self.calibrator = TwoLayerCalibrator(
+                bilateral_diameter=self.bilateral_diameter,
+                bilateral_sigma=self.bilateral_sigma,
+            )
             self.load_inventory()
         except Exception as error:
             print("hardware state storage unavailable:", error, flush=True)
@@ -146,10 +154,14 @@ class DepthWindow(Gtk.Window):
         if not finite.any():
             print("MiDaS returned no finite depth", flush=True)
             return
+        try:
+            normalized_depth = denoise_relative_depth(
+                depth, self.bilateral_diameter, self.bilateral_sigma
+            )
+        except ValueError as error:
+            print("MiDaS depth normalization failed:", error, flush=True)
+            return
         low, high = (float(value) for value in np.percentile(depth[finite], (2, 98)))
-        depth_range = max(high - low, 1e-6)
-        normalized_depth = np.clip((depth - low) / depth_range, 0.0, 1.0).astype(np.float32)
-        normalized_depth[~finite] = 0.0
         if self.previous_depth is not None:
             self.depth_change = float(np.mean(np.abs(normalized_depth - self.previous_depth)))
         self.previous_depth = normalized_depth.copy()
@@ -526,11 +538,20 @@ def main():
     parser.add_argument("--layer", type=int, choices=(1, 2),
                         help="active drawer layer for transaction inventory updates")
     parser.add_argument("--transaction-roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"),
-                        help="capture depth Snapshot A/B in this 256x256 ROI and detect its changed crop once")
+                        help="capture depth Snapshot A/B in this 256x256 ROI and vote on its changed crop")
     parser.add_argument("--motion-threshold", type=float, default=0.04)
     parser.add_argument("--stability-threshold", type=float, default=0.015)
     parser.add_argument("--object-change-threshold", type=float, default=0.10)
     parser.add_argument("--direction-threshold", type=float, default=0.05)
+    parser.add_argument("--bilateral-diameter", type=int, default=5)
+    parser.add_argument("--bilateral-sigma", type=float, default=0.08)
+    parser.add_argument("--noise-multiplier", type=float, default=1.5)
+    parser.add_argument("--noise-warmup-frames", type=int, default=8)
+    parser.add_argument("--change-noise-multiplier", type=float, default=4.0)
+    parser.add_argument("--detector-frames", type=int, default=3,
+                        help="stable crop frames used for detector consensus")
+    parser.add_argument("--detector-vote-ratio", type=float, default=2 / 3)
+    parser.add_argument("--detector-match-iou", type=float, default=0.40)
     args = parser.parse_args()
     if not os.path.isfile(args.model):
         raise FileNotFoundError(args.model)
@@ -556,9 +577,17 @@ def main():
             stability_threshold=args.stability_threshold,
             object_change_threshold=args.object_change_threshold,
             direction_threshold=args.direction_threshold,
+            bilateral_diameter=args.bilateral_diameter,
+            bilateral_sigma=args.bilateral_sigma,
+            noise_multiplier=args.noise_multiplier,
+            noise_warmup_frames=args.noise_warmup_frames,
+            change_noise_multiplier=args.change_noise_multiplier,
+            detector_frames=args.detector_frames,
+            detector_vote_ratio=args.detector_vote_ratio,
+            detector_match_iou=args.detector_match_iou,
         )
     os.environ.setdefault("XDG_RUNTIME_DIR", "/run/user/0")
-    os.environ.setdefault("WAYLAND_DISPLAY", "/run/wayland-0")
+    os.environ.setdefault("WAYLAND_DISPLAY", "wayland-0")
     Gst.init(None)
     window = DepthWindow(
         args.camera,
@@ -568,6 +597,8 @@ def main():
         args.detect_after,
         transaction_probe,
         args.layer,
+        bilateral_diameter=args.bilateral_diameter,
+        bilateral_sigma=args.bilateral_sigma,
     )
     signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(window.close))
     window.show_all()

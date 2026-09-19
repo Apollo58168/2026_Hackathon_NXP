@@ -43,6 +43,7 @@ class DetectedObject:
     confidence: float
     # x, y, width, height in the original RGB crop coordinates.
     box: tuple[int, int, int, int]
+    votes: int = 1
 
 
 class SSDLiteDetector:

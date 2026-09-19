@@ -11,18 +11,28 @@ from dataclasses import replace
 from typing import Any, Optional
 
 from core import LayerCalibration, robust_bottom_stat
+from depth_denoise import denoise_relative_depth
 
 
 class TwoLayerCalibrator:
     """Automatic two-layer initializer driven by successive MiDaS frames."""
 
-    def __init__(self, *, stable_frame_count: int = 3, near_is_positive: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        stable_frame_count: int = 3,
+        near_is_positive: bool = True,
+        bilateral_diameter: int = 5,
+        bilateral_sigma: float = 0.08,
+    ) -> None:
         self.np = __import__("numpy")
         self.cv2 = __import__("cv2")
         self.stable_frame_count = int(stable_frame_count)
         if self.stable_frame_count < 3:
             raise ValueError("stable_frame_count must be at least 3")
         self.near_is_positive = near_is_positive
+        self.bilateral_diameter = int(bilateral_diameter)
+        self.bilateral_sigma = float(bilateral_sigma)
         self.state = "idle"
         self.message = "INITIALIZATION"
         self.closed_depth: Optional[Any] = None
@@ -93,17 +103,7 @@ class TwoLayerCalibrator:
         return True
 
     def _normalize(self, depth: Any) -> Any:
-        finite = self.np.isfinite(depth)
-        if not finite.any():
-            raise ValueError("MiDaS returned no finite depth")
-        low, high = self.np.percentile(depth[finite], (5, 95))
-        result = self.np.clip(
-            (depth.astype(self.np.float32) - low) / max(float(high - low), 1e-6),
-            0.0,
-            1.0,
-        ).astype(self.np.float32)
-        result[~finite] = 0.0
-        return result
+        return denoise_relative_depth(depth, self.bilateral_diameter, self.bilateral_sigma)
 
     def _align(self, source: Any) -> Any:
         """Robustly align source depth to the closed background."""
