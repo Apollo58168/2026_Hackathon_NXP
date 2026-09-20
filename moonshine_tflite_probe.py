@@ -94,8 +94,6 @@ class MoonshineTFLite:
                 break
             tokens[0, position] = next_token
             decoded.append(next_token)
-        else:
-            raise RuntimeError(f"Decoder did not emit EOS within {MAX_TOKENS} tokens")
         decoder_seconds = time.perf_counter() - decoder_started
 
         text = self.tokenizer.decode(decoded, skip_special_tokens=True).strip()

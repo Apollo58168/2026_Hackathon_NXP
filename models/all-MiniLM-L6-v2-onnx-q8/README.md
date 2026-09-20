@@ -34,7 +34,7 @@ uv run python hey_drawer.py
 It only accepts words after the exact normalized wake phrase. For example,
 `hello, remote` embeds `remote`, while `remote` by itself is ignored.
 When `hello` is spoken alone, the following object name must arrive within
-two seconds; after that the listener automatically waits for a new `hello`.
+one second. The listener then ignores new wake phrases for three seconds.
 Use `--input-device ':0'` on macOS when needed, or an ALSA device such as
 `--input-device 'hw:3,0'` on i.MX93.
 

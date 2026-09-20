@@ -372,12 +372,15 @@ def voice_query_worker(
             mapper,
             wake_phrase=args.wake_phrase,
             wake_timeout=args.wake_timeout,
+            cooldown=args.voice_cooldown,
         )
         moonshine = MoonshineTFLite(args.voice_model, DEFAULT_TOKENIZER, args.voice_threads)
         input_format = args.voice_input_format
         if input_format == "auto":
             input_format = "avfoundation" if sys.platform == "darwin" else "alsa"
-        input_device = args.voice_input_device or (":0" if input_format == "avfoundation" else "default")
+        input_device = args.voice_input_device or (
+            ":0" if input_format == "avfoundation" else "plughw:CARD=WEBCAM,DEV=0"
+        )
         events.put(("status", f"VOICE READY - say '{args.wake_phrase}, remote'"))
 
         for audio in live_utterances(
@@ -386,7 +389,7 @@ def voice_query_worker(
             silence_ms=500,
             preroll_ms=120,
             min_speech_ms=200,
-            max_utterance_seconds=5.0,
+            max_utterance_seconds=args.voice_command_seconds,
             stop_event=stop_event,
         ):
             if not enabled_event.is_set():
@@ -1133,7 +1136,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--semantic-catalog", type=Path, default=DEFAULT_SEMANTIC_CATALOG)
     parser.add_argument("--semantic-vector-cache", type=Path, default=DEFAULT_SEMANTIC_VECTOR_CACHE)
     parser.add_argument("--wake-phrase", default="hello")
-    parser.add_argument("--wake-timeout", type=float, default=2.0)
+    parser.add_argument("--wake-timeout", type=float, default=1.0)
+    parser.add_argument("--voice-cooldown", type=float, default=3.0)
+    parser.add_argument("--voice-command-seconds", type=float, default=1.0)
     parser.add_argument("--voice-threads", type=int, default=2)
     parser.add_argument("--voice-input-format", choices=("auto", "avfoundation", "alsa"), default="auto")
     parser.add_argument("--voice-input-device")
@@ -1397,8 +1402,13 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("detector confidence must be in (0, 1] and NMS IoU in [0, 1]")
     if args.noise_warmup_frames < 1 or args.noise_multiplier < 1:
         raise ValueError("noise warmup must be positive and multiplier at least 1")
-    if not args.no_voice and (args.voice_threads < 1 or args.wake_timeout <= 0):
-        raise ValueError("voice threads and wake timeout must be positive")
+    if not args.no_voice and (
+        args.voice_threads < 1
+        or args.wake_timeout <= 0
+        or args.voice_cooldown < 0
+        or args.voice_command_seconds <= 0
+    ):
+        raise ValueError("voice threads, wake timeout, and command duration must be positive")
     depth_model = make_depth_model(args)
     detector = CocoDetector(
         args.detector_model,

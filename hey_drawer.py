@@ -59,12 +59,15 @@ class WakeCommandProcessor:
         mapper: EmbeddingMapper,
         *,
         wake_phrase: str = "hello",
-        wake_timeout: float = 2.0,
+        wake_timeout: float = 1.0,
+        cooldown: float = 3.0,
     ) -> None:
         self.mapper = mapper
         self.wake_phrase = wake_phrase
         self.wake_timeout = wake_timeout
+        self.cooldown = cooldown
         self.armed_until = 0.0
+        self.cooldown_until = 0.0
 
     def process(self, transcript: str, *, now: float | None = None) -> tuple[str, EmbeddingMatch | None] | None:
         """Process one ASR utterance.
@@ -73,13 +76,19 @@ class WakeCommandProcessor:
         when the wake phrase arms the next utterance, or ``(query, match)``.
         """
         timestamp = time.monotonic() if now is None else now
+        armed = timestamp <= self.armed_until
+        if not armed and timestamp < self.cooldown_until:
+            return None
+
         query = extract_after_wake(transcript, self.wake_phrase)
         if query is not None:
             if not query:
                 self.armed_until = timestamp + self.wake_timeout
+                self.cooldown_until = self.armed_until + self.cooldown
                 return "", None
             self.armed_until = 0.0
-        elif timestamp <= self.armed_until:
+            self.cooldown_until = timestamp + self.cooldown
+        elif armed:
             query = " ".join(words(transcript))
             self.armed_until = 0.0
             if not query:
@@ -94,6 +103,21 @@ class WakeCommandProcessor:
 def microphone_command(input_format: str, input_device: str) -> list[str]:
     if input_format == "auto":
         input_format = "avfoundation" if platform.system() == "Darwin" else "alsa"
+    if input_format == "alsa":
+        return [
+            "arecord",
+            "-q",
+            "-D",
+            input_device,
+            "-f",
+            "S16_LE",
+            "-c",
+            "1",
+            "-r",
+            str(SAMPLE_RATE),
+            "-t",
+            "raw",
+        ]
     return [
         "ffmpeg",
         "-nostdin",
@@ -226,9 +250,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--wake-timeout",
         type=float,
-        default=2.0,
+        default=1.0,
         help="Seconds to accept one follow-up object name after the wake phrase",
     )
+    parser.add_argument("--cooldown", type=float, default=3.0, help="Seconds before accepting another wake phrase")
     parser.add_argument(
         "--model",
         type=Path,
@@ -245,15 +270,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--silence-ms", type=int, default=500)
     parser.add_argument("--preroll-ms", type=int, default=120)
     parser.add_argument("--min-speech-ms", type=int, default=200)
-    parser.add_argument("--max-utterance-seconds", type=float, default=5.0)
+    parser.add_argument("--max-utterance-seconds", type=float, default=1.0)
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
-    if args.threads < 1 or args.wake_timeout <= 0:
-        parser.error("threads must be positive and wake-timeout must be > 0")
+    if args.threads < 1 or args.wake_timeout <= 0 or args.cooldown < 0:
+        parser.error("threads and wake-timeout must be positive; cooldown cannot be negative")
     return args
+
+
+def self_test() -> None:
+    class FakeMapper:
+        def rank(self, text: str) -> tuple[list[str], float]:
+            return [text], 0.0
+
+        def accept(self, matches: list[str]) -> str:
+            return matches[0]
+
+    processor = WakeCommandProcessor(FakeMapper(), wake_timeout=1.0, cooldown=3.0)  # type: ignore[arg-type]
+    assert processor.process("hello", now=10.0) == ("", None)
+    assert processor.process("telephone", now=10.5) == ("telephone", "telephone")
+    assert processor.process("hello remote", now=12.0) is None
+    assert processor.process("hello remote", now=14.1) == ("remote", "remote")
+    print("hey_drawer: self-test OK")
 
 
 def main() -> None:
     args = parse_args()
+    if args.self_test:
+        self_test()
+        return
     embedding_encoder = OnnxSentenceEncoder(
         args.embedding_model_dir / "onnx" / "model_qint8_arm64.onnx",
         args.embedding_model_dir / "tokenizer.json",
@@ -268,6 +313,7 @@ def main() -> None:
         mapper,
         wake_phrase=args.wake_phrase,
         wake_timeout=args.wake_timeout,
+        cooldown=args.cooldown,
     )
 
     if args.text is not None:
@@ -296,7 +342,9 @@ def main() -> None:
     input_format = args.input_format
     if input_format == "auto":
         input_format = "avfoundation" if platform.system() == "Darwin" else "alsa"
-    input_device = args.input_device or (":0" if input_format == "avfoundation" else "default")
+    input_device = args.input_device or (
+        ":0" if input_format == "avfoundation" else "plughw:CARD=WEBCAM,DEV=0"
+    )
     command = microphone_command(input_format, input_device)
     print(
         f"Listening on {input_format}:{input_device}. "
