@@ -4,6 +4,9 @@
 This is deliberately not an intent/NLP pipeline.  Moonshine produces text,
 the fixed wake phrase gates the command, and only the words after the wake
 phrase are embedded and compared with the YOLOv8 COCO vector catalog.
+
+Speech recognition uses the fixed-window Moonshine Tiny i8 TFLite model so
+the same runtime can be deployed to the target board.
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ from typing import Iterator
 
 import numpy as np
 
-from moonshine_onnx_probe import DEFAULT_MODEL_DIR, MoonshineTiny, load_wav
+from moonshine_tflite_probe import DEFAULT_MODEL, DEFAULT_TOKENIZER, MoonshineTFLite, load_wav
 from semantic_embedding import EmbeddingMapper, EmbeddingMatch, OnnxSentenceEncoder
 
 
@@ -224,12 +227,16 @@ def parse_args() -> argparse.Namespace:
         default=2.0,
         help="Seconds to accept one follow-up object name after the wake phrase",
     )
-    parser.add_argument("--moonshine-model-dir", type=Path, default=DEFAULT_MODEL_DIR)
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=DEFAULT_MODEL,
+        help="Path to the Moonshine Tiny i8 TFLite model",
+    )
     parser.add_argument("--embedding-model-dir", type=Path, default=DEFAULT_EMBEDDING_MODEL_DIR)
     parser.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     parser.add_argument("--vector-cache", type=Path, default=DEFAULT_VECTOR_CACHE)
     parser.add_argument("--threads", type=int, default=2)
-    parser.add_argument("--max-new-tokens", type=int, default=64)
     parser.add_argument("--input-format", choices=("auto", "avfoundation", "alsa"), default="auto")
     parser.add_argument("--input-device", help="macOS ':0'; Linux usually 'default'")
     parser.add_argument("--vad-threshold-db", type=float, default=-42.0)
@@ -238,8 +245,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-speech-ms", type=int, default=200)
     parser.add_argument("--max-utterance-seconds", type=float, default=5.0)
     args = parser.parse_args()
-    if args.threads < 1 or args.wake_timeout <= 0 or args.max_new_tokens < 1:
-        parser.error("threads/max-new-tokens must be positive and wake-timeout must be > 0")
+    if args.threads < 1 or args.wake_timeout <= 0:
+        parser.error("threads must be positive and wake-timeout must be > 0")
     return args
 
 
@@ -269,10 +276,14 @@ def main() -> None:
         )
         return
 
-    moonshine = MoonshineTiny(args.moonshine_model_dir, threads=args.threads)
+    moonshine = MoonshineTFLite(
+        args.model,
+        DEFAULT_TOKENIZER,
+        args.threads,
+    )
     if args.audio is not None:
         audio, _ = load_wav(args.audio)
-        transcript, _, _, _ = moonshine.transcribe(audio, args.max_new_tokens)
+        transcript, _ = moonshine.transcribe(audio)
         print_result(
             transcript,
             processor.process(transcript),
@@ -298,7 +309,7 @@ def main() -> None:
             min_speech_ms=args.min_speech_ms,
             max_utterance_seconds=args.max_utterance_seconds,
         ):
-            transcript, _, _, _ = moonshine.transcribe(audio, args.max_new_tokens)
+            transcript, _ = moonshine.transcribe(audio)
             if transcript:
                 print_result(
                     transcript,
