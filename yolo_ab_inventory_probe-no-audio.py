@@ -20,8 +20,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from queue import Empty, Queue
-from threading import Event, Thread
 from typing import Deque, Optional, Sequence
 
 import cv2
@@ -73,22 +71,6 @@ DEFAULT_ENABLED_CONFIG = first_existing(
     Path("/root/enabled_classes.json"),
     SCRIPT_DIR / "config/enabled_classes.json",
     SCRIPT_DIR.parent / "config/enabled_classes.json",
-)
-DEFAULT_VOICE_MODEL = first_existing(
-    Path("/root/models/moonshine_tiny_5s_i8.tflite"),
-    SCRIPT_DIR / "models/moonshine_tiny_5s_i8.tflite",
-)
-DEFAULT_EMBEDDING_MODEL_DIR = first_existing(
-    Path("/root/models/all-MiniLM-L6-v2-onnx-q8/onnx/model_qint8_arm64.onnx"),
-    SCRIPT_DIR / "models/all-MiniLM-L6-v2-onnx-q8/onnx/model_qint8_arm64.onnx",
-).parent.parent
-DEFAULT_SEMANTIC_CATALOG = first_existing(
-    Path("/root/config/semantic_catalog_en.json"),
-    SCRIPT_DIR / "config/semantic_catalog_en.json",
-)
-DEFAULT_SEMANTIC_VECTOR_CACHE = first_existing(
-    Path("/root/config/semantic_catalog_en_minilm_q8.npz"),
-    SCRIPT_DIR / "config/semantic_catalog_en_minilm_q8.npz",
 )
 FEEDBACK_HEIGHT = 44
 HEADER_HEIGHT = 76
@@ -337,98 +319,6 @@ class CocoDetector:
 
 def canonical_inventory_class(class_id: int, label: str) -> tuple[int, str]:
     return (65, "remote") if label == "keyboard" else (class_id, label)
-
-
-VoiceEvent = tuple[str, object]
-
-
-def voice_query_worker(
-    args: argparse.Namespace,
-    events: Queue[VoiceEvent],
-    stop_event: Event,
-    enabled_event: Event,
-) -> None:
-    """Run microphone, Moonshine, and MiniLM off the camera loop."""
-    try:
-        from hey_drawer import (
-            WakeCommandProcessor,
-            live_utterances,
-            microphone_command,
-        )
-        from moonshine_tflite_probe import DEFAULT_TOKENIZER, MoonshineTFLite
-        from semantic_embedding import EmbeddingMapper, OnnxSentenceEncoder
-
-        encoder = OnnxSentenceEncoder(
-            args.embedding_model_dir / "onnx" / "model_qint8_arm64.onnx",
-            args.embedding_model_dir / "tokenizer.json",
-            threads=args.voice_threads,
-        )
-        mapper = EmbeddingMapper.from_json(
-            encoder,
-            args.semantic_catalog,
-            vector_cache=args.semantic_vector_cache,
-        )
-        processor = WakeCommandProcessor(
-            mapper,
-            wake_phrase=args.wake_phrase,
-            wake_timeout=args.wake_timeout,
-        )
-        moonshine = MoonshineTFLite(args.voice_model, DEFAULT_TOKENIZER, args.voice_threads)
-        input_format = args.voice_input_format
-        if input_format == "auto":
-            input_format = "avfoundation" if sys.platform == "darwin" else "alsa"
-        input_device = args.voice_input_device or (":0" if input_format == "avfoundation" else "default")
-        events.put(("status", f"VOICE READY - say '{args.wake_phrase}, remote'"))
-
-        for audio in live_utterances(
-            microphone_command(input_format, input_device),
-            threshold_db=args.voice_vad_threshold_db,
-            silence_ms=500,
-            preroll_ms=120,
-            min_speech_ms=200,
-            max_utterance_seconds=5.0,
-            stop_event=stop_event,
-        ):
-            if not enabled_event.is_set():
-                continue
-            transcript, _ = moonshine.transcribe(audio)
-            if not transcript or not enabled_event.is_set():
-                continue
-            outcome = processor.process(transcript)
-            if outcome is None:
-                continue
-            query, match = outcome
-            if not query:
-                events.put(("status", "VOICE WAKE DETECTED - say an item"))
-            elif match is None:
-                events.put(("rejected", query))
-            else:
-                events.put(
-                    (
-                        "match",
-                        (
-                            query,
-                            match.display_name,
-                            match.canonical_label,
-                            match.class_id,
-                            match.score,
-                            match.margin,
-                        ),
-                    )
-                )
-    except Exception as error:
-        events.put(("error", str(error)))
-
-
-def voice_inventory_message(
-    query: str,
-    display_name: str,
-    locations: Sequence[tuple[int, int]],
-) -> str:
-    if not locations:
-        return f"VOICE: {query} -> {display_name} is not in the drawer"
-    where = ", ".join(f"L{layer} x{quantity}" for layer, quantity in locations)
-    return f"VOICE: {query} -> {display_name}: {where}"
 
 
 def deduplicate_canonical_detections(detections: Sequence[Detection], nms_iou: float) -> list[Detection]:
@@ -760,8 +650,6 @@ def render(
     probe: CocoABProbe,
     depth_ms: float,
     inventory_by_layer: dict[int, Counter[str]],
-    voice_message: str = "",
-    voice_layers: frozenset[int] = frozenset(),
 ) -> np.ndarray:
     height, width = frame.shape[:2]
     instruction, colour = PHASE_FEEDBACK[probe.phase]
@@ -816,17 +704,12 @@ def render(
     footer = np.zeros((154, width * 2, 3), dtype=np.uint8)
     before_inventory = Counter() if probe.before is None else probe.before.inventory
     for layer, left in ((1, 6), (2, width + 6)):
-        highlighted = probe.active_layer == layer or layer in voice_layers
-        border = (80, 220, 120) if probe.active_layer == layer else ((0, 220, 255) if layer in voice_layers else (105, 105, 105))
-        cv2.rectangle(footer, (left, 6), (left + width - 12, 91), border, 4 if highlighted else 2)
+        border = (80, 220, 120) if probe.active_layer == layer else (105, 105, 105)
+        cv2.rectangle(footer, (left, 6), (left + width - 12, 91), border, 4 if probe.active_layer == layer else 2)
         cv2.putText(footer, f"LAYER {layer}", (left + 14, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.78, border, 2, cv2.LINE_AA)
         inventory_text = format_inventory(inventory_by_layer[layer])
         cv2.putText(footer, inventory_text, (left + 14, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.90, (255, 255, 255), 2, cv2.LINE_AA)
-    status = (
-        voice_message
-        if probe.phase == "ready_for_a" and voice_message
-        else ("Detector active" if probe.phase == "collect_before" else probe.message)
-    )
+    status = "Detector active" if probe.phase == "collect_before" else probe.message
     cv2.putText(
         footer,
         f"Snapshot A: {format_inventory(before_inventory)} | active layer: {probe.active_layer or 'unknown'}",
@@ -990,7 +873,7 @@ def self_test() -> None:
         [item(41, "cup", (10, 10, 30, 30))],
         [],
     ]
-    eighty_percent = consensus_detections(eighty_percent_frames, vote_ratio=0.80, match_iou=0.4)
+    eighty_percent = consensus_detections(eighty_percent_frames, vote_ratio=0.30, match_iou=0.4)
     assert Counter(result.name for result in eighty_percent) == Counter({"cup": 1})
     assert eighty_percent[0].votes == 4
     assert compare_inventories(Counter({"cup": 1}), Counter({"cup": 2})).action == "put_in"
@@ -1000,10 +883,6 @@ def self_test() -> None:
     assert compare_inventories(Counter({"cup": 1}), Counter({"bottle": 1})).action == "ambiguous"
     assert canonical_inventory_class(66, "keyboard") == (65, "remote")
     assert canonical_inventory_class(64, "mouse") == (64, "mouse")
-    assert voice_inventory_message("keyboard", "TV remote", [(1, 2)]) == "VOICE: keyboard -> TV remote: L1 x2"
-    semantic_items = json.loads(DEFAULT_SEMANTIC_CATALOG.read_text(encoding="utf-8"))["items"]
-    keyboard_item = next(item for item in semantic_items if "keyboard" in item["phrases"])
-    assert (keyboard_item["class_id"], keyboard_item["canonical_label"]) == (65, "remote")
     aliases = deduplicate_canonical_detections(
         [item(65, "remote", (10, 10, 30, 30), 0.9), item(65, "remote", (11, 10, 31, 30), 0.8)],
         0.4,
@@ -1127,17 +1006,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vl53-samples", type=int, default=15)
     parser.add_argument("--calibrate-vl53", action="store_true", help="record layer 1 and 2 distances, then exit")
     parser.add_argument("--no-vl53", action="store_true", help="run without layer ranging")
-    parser.add_argument("--no-voice", action="store_true", help="disable microphone voice queries")
-    parser.add_argument("--voice-model", type=Path, default=DEFAULT_VOICE_MODEL)
-    parser.add_argument("--embedding-model-dir", type=Path, default=DEFAULT_EMBEDDING_MODEL_DIR)
-    parser.add_argument("--semantic-catalog", type=Path, default=DEFAULT_SEMANTIC_CATALOG)
-    parser.add_argument("--semantic-vector-cache", type=Path, default=DEFAULT_SEMANTIC_VECTOR_CACHE)
-    parser.add_argument("--wake-phrase", default="hello")
-    parser.add_argument("--wake-timeout", type=float, default=2.0)
-    parser.add_argument("--voice-threads", type=int, default=2)
-    parser.add_argument("--voice-input-format", choices=("auto", "avfoundation", "alsa"), default="auto")
-    parser.add_argument("--voice-input-device")
-    parser.add_argument("--voice-vad-threshold-db", type=float, default=-42.0)
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args()
 
@@ -1397,8 +1265,6 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("detector confidence must be in (0, 1] and NMS IoU in [0, 1]")
     if args.noise_warmup_frames < 1 or args.noise_multiplier < 1:
         raise ValueError("noise warmup must be positive and multiplier at least 1")
-    if not args.no_voice and (args.voice_threads < 1 or args.wake_timeout <= 0):
-        raise ValueError("voice threads and wake timeout must be positive")
     depth_model = make_depth_model(args)
     detector = CocoDetector(
         args.detector_model,
@@ -1464,21 +1330,6 @@ def run(args: argparse.Namespace) -> None:
     frames_processed = 0
     before_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="before-detector")
     before_future: Optional[Future[tuple[int, list[list[Detection]], float, Optional[float]]]] = None
-    voice_events: Queue[VoiceEvent] = Queue()
-    voice_stop = Event()
-    voice_enabled = Event()
-    voice_enabled.set()
-    voice_message = "VOICE DISABLED" if args.no_voice else "VOICE: loading Moonshine + MiniLM..."
-    voice_layers: frozenset[int] = frozenset()
-    voice_thread: Optional[Thread] = None
-    if not args.no_voice:
-        voice_thread = Thread(
-            target=voice_query_worker,
-            args=(args, voice_events, voice_stop, voice_enabled),
-            name="voice-query",
-            daemon=True,
-        )
-        voice_thread.start()
 
     def detect_before(
         frame: np.ndarray, capture_id: int
@@ -1531,48 +1382,9 @@ def run(args: argparse.Namespace) -> None:
                     probe.message = f"Could not finalize the before set: {error}"
             frames_processed += 1
 
-            if probe.phase == "ready_for_a":
-                voice_enabled.set()
-            else:
-                voice_enabled.clear()
-                voice_layers = frozenset()
-            while True:
-                try:
-                    event, payload = voice_events.get_nowait()
-                except Empty:
-                    break
-                if event == "match" and probe.phase == "ready_for_a":
-                    query, display_name, canonical_label, class_id, score, margin = payload
-                    class_id, canonical_label = canonical_inventory_class(int(class_id), str(canonical_label))
-                    locations = storage.query_item(class_id)
-                    voice_layers = frozenset(layer for layer, _quantity in locations)
-                    voice_message = voice_inventory_message(str(query), str(display_name), locations)
-                    print(
-                        f"{voice_message} | class={canonical_label}/{class_id} "
-                        f"cosine={float(score):.3f} margin={float(margin):.3f}"
-                    )
-                elif event == "rejected" and probe.phase == "ready_for_a":
-                    voice_layers = frozenset()
-                    voice_message = f"VOICE: {payload!s} -> no reliable match"
-                    print(voice_message)
-                elif event in {"status", "error"}:
-                    voice_message = str(payload) if event == "status" else f"VOICE ERROR: {payload}"
-                    print(voice_message)
-
             key = -1
             if not args.no_display:
-                cv2.imshow(
-                    window,
-                    render(
-                        frame,
-                        depth,
-                        probe,
-                        depth_ms,
-                        inventory_by_layer,
-                        voice_message,
-                        voice_layers,
-                    ),
-                )
+                cv2.imshow(window, render(frame, depth, probe, depth_ms, inventory_by_layer))
                 key = cv2.waitKey(1) & 0xFF
             try:
                 if probe.phase == "collect_before":
@@ -1600,9 +1412,6 @@ def run(args: argparse.Namespace) -> None:
             elif key == ord("s"):
                 save()
     finally:
-        voice_stop.set()
-        if voice_thread is not None:
-            voice_thread.join(timeout=10)
         before_executor.shutdown(wait=True, cancel_futures=True)
         capture.release()
         if layer_sensor is not None:

@@ -11,6 +11,16 @@ Downloaded artifacts:
 | `yolov8n_coco_int8.tflite` | [EdgeFirst YOLOv8 COCO](https://huggingface.co/EdgeFirst/yolov8-det) | `357ffdc968542da6c74f3a83eb566a85be4f33663cb5b866521bcc80354e237c` | Retained reference; not selected because GoPoint's SSDLite path is the verified board path |
 | `coco_labels.txt` | same YOLO repository | `bd17f1ee35d5f3c862a4894605855abbb9dda4b0621fdb0ac4c2c8c7bb7e730a` | 80 labels for the retained YOLO reference |
 | `reference/lp_kws_detection_en.elf` | [NXP low-power KWS assets](https://github.com/nxp-imx-support/nxp-demo-experience-assets) | `57deace46b2dd9f3089ed2dab023d6ec61b9fa53e75e45a67f64bedb4e5da0c2` | English reference only; not used for Mandarin MVP |
+| `moonshine_tiny_5s_i8.tflite` | [Moonshine Tiny LiteRT](https://huggingface.co/devendradhakad/autodroid-litert-community-moonshine-tiny) | `97abdeea122d579229091659c24c59d988c6419d453a200f6471241a53b9a9b9` | English ASR on CPU; downloaded locally and ignored by Git |
+| `all-MiniLM-L6-v2-onnx-q8/onnx/model_qint8_arm64.onnx` | [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | `4278337fd0ff3c68bfb6291042cad8ab363e1d9fbc43dcb499fe91c871902474` | English embedding model on ONNX Runtime CPU; downloaded locally and ignored by Git |
+
+`yolo_ab_inventory_probe.py` runs voice inference in a background thread and
+accepts queries only while the drawer is in `ready_for_a`. Both spoken
+`keyboard` and detector class `keyboard` resolve to canonical `remote` (COCO
+class 65), then `Storage.query_item()` returns and highlights matching layers.
+Use `--no-voice` when the microphone or voice runtimes are unavailable. Voice
+requires `ffmpeg`, `onnxruntime`, `tokenizers`, and either `ai-edge-litert` or
+`tflite-runtime` on the target.
 
 The Mandarin wake-word/20-class KWS artifact is **not publicly available in
 `Ref/` or the NXP sample assets**. Generate it with the NXP VIT Model

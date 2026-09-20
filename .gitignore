@@ -1,2 +1,6 @@
 __pycache__/
 *.py[cod]
+
+# Downloaded voice model binaries (see their bundle READMEs).
+models/moonshine_tiny_5s_i8.tflite
+models/all-MiniLM-L6-v2-onnx-q8/onnx/
