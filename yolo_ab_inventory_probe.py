@@ -56,9 +56,8 @@ def first_existing(*paths: Path) -> Path:
 
 
 DEFAULT_DETECTOR_MODEL = first_existing(
-    Path("/opt/gopoint-apps/downloads/ssdlite_mobilenet_v2_coco_quant_uint8_float32_no_postprocess_vela.tflite"),
-    SCRIPT_DIR / "models/ssdlite_mobilenet_v2_coco_quant_uint8_float32_no_postprocess_vela.tflite",
-    SCRIPT_DIR.parent / "models/ssdlite_mobilenet_v2_coco_quant_uint8_float32_no_postprocess_vela.tflite",
+    Path("/opt/gopoint-tui/downloads/yolov8m_640_int8_vela5.tflite"),
+    SCRIPT_DIR / "yolov8m_640_int8_vela5.tflite",
 )
 DEFAULT_DETECTOR_LABELS = first_existing(
     Path("/opt/gopoint-apps/downloads/coco_labels_list.txt"),
@@ -85,7 +84,7 @@ BUTTONS = {
 PHASE_FEEDBACK = {
     "ready_for_a": ("WAITING - Open the drawer to auto-capture A", (0, 180, 255)),
     "capture_a": ("DRAWER OPENED - Waiting for stable Snapshot A", (0, 180, 255)),
-    "collect_before": ("SNAPSHOT A READY - SSDLite active; close the drawer when done", (44, 170, 44)),
+    "collect_before": ("SNAPSHOT A READY - YOLOv8m active; close the drawer when done", (44, 170, 44)),
     "capture_b": ("DRAWER CLOSING - Waiting for stable close, then reset", (0, 180, 255)),
     "analyze_b": ("CLOSING COMPLETE - Resetting for the next open", (0, 180, 255)),
     "complete": ("READY FOR NEXT OPEN", (180, 100, 40)),
@@ -254,7 +253,7 @@ def annotate(frame: np.ndarray, detections: Sequence[Detection], total_frames: i
 
 
 class CocoDetector:
-    """Use the selected COCO TFLite detector on RGB camera frames."""
+    """Use YOLOv8m TFLite on RGB camera frames."""
 
     def __init__(
         self,
@@ -266,13 +265,11 @@ class CocoDetector:
         enabled_labels: Sequence[str],
         delegate_path: Optional[str],
     ) -> None:
-        from ssdlite_detector import SSDLiteDetector
+        from yolov8_tflite_detector import YoloV8TFLiteDetector
 
         delegate = delegate_path if delegate_path and Path(delegate_path).is_file() else None
-        self.model = SSDLiteDetector(
+        self.model = YoloV8TFLiteDetector(
             str(model_path),
-            str(labels_path),
-            str(priors_path),
             delegate_path=delegate,
             confidence=confidence,
             nms_iou=nms_iou,
@@ -280,6 +277,19 @@ class CocoDetector:
         )
         self.name = model_path.name
         self.backend = self.model.backend
+
+    def diagnostic_text(self) -> str:
+        input_shape = tuple(int(value) for value in self.model.input["shape"])
+        output_shape = tuple(int(value) for value in self.model.output["shape"])
+        quantization = (
+            "affine INT8" if np.issubdtype(self.model.input["dtype"], np.integer) else "Float32"
+        )
+        return (
+            f"input={input_shape} {self.model.input['dtype']} q={self.model.input['quantization']}; "
+            f"output={output_shape} {self.model.output['dtype']} q={self.model.output['quantization']}; "
+            f"preprocess=RGB letterbox + one /255 + {quantization}; "
+            f"layout={self.model.input_layout}; head=xywh + 80 scores"
+        )
 
     def detect(self, frames: Sequence[np.ndarray]) -> tuple[list[list[Detection]], float]:
         if not frames:
@@ -509,9 +519,9 @@ class CocoABProbe:
         self.before_observations.append(detections)
         self.before_inference_ms += inference_ms
         if distance_mm is not None:
-            self.distance_observations.append(distance_mm)
             self.last_distance_mm = distance_mm
-            if self.layer_profiles is not None:
+            if self.active_layer is None and self.layer_profiles is not None:
+                self.distance_observations.append(distance_mm)
                 self.active_layer = self.layer_profiles.match(float(np.median(self.distance_observations)))
         self._refresh_before_analysis()
         assert self.before is not None
@@ -639,7 +649,7 @@ def render(frame: np.ndarray, depth: np.ndarray, probe: CocoABProbe, depth_ms: f
             header,
             label_row("Live RGB", "Live depth (capture timing only)", width),
             np.hstack((frame, live_depth)),
-            label_row("Snapshot A - SSDLite detector consensus", "Drawer close -> automatic reset", width),
+            label_row("Snapshot A - YOLOv8m detector consensus", "Drawer close -> automatic reset", width),
             np.hstack((before_view, after_view)),
             footer,
         )
@@ -743,12 +753,12 @@ def self_test() -> None:
             return [[item(41, "cup", (10, 10, 30, 30))] for _ in selected], 1.0
 
     fake_detector = FakeDetector()
-    for _ in range(5):
+    for distance_mm in (122.0, 318.0, 318.0, 318.0, 318.0):
         detections, inference_ms = fake_detector.detect([frame])
-        probe.record_before_observation(detections[0], inference_ms, 122.0)
+        probe.record_before_observation(detections[0], inference_ms, distance_mm)
     assert probe.phase == "collect_before" and probe.before is not None
     assert probe.before.frames_analyzed == 5 and probe.before.inventory == Counter({"cup": 1})
-    assert probe.active_layer == 1
+    assert probe.active_layer == 1  # The first YOLO sample locks the drawer layer.
     probe.process(frame, depth_b)
     assert probe.phase == "capture_b"
     probe.finalize_before()
@@ -1007,7 +1017,7 @@ def run_detector_only(args: argparse.Namespace) -> None:
     layer_sensor, layer_profiles = open_layer_sensor(args)
     capture = open_camera(args)
     history: Deque[list[Detection]] = deque(maxlen=args.detector_window)
-    window = "SSDLite detector only"
+    window = "YOLOv8m detector only"
     if not args.no_display:
         cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     print(
@@ -1015,6 +1025,7 @@ def run_detector_only(args: argparse.Namespace) -> None:
         f"confidence={args.detector_confidence:.2f}; "
         "press q/Esc to stop"
     )
+    print(detector.diagnostic_text())
     frames_processed = 0
     last_signature: Optional[tuple[tuple[str, int], ...]] = None
     try:
@@ -1124,6 +1135,7 @@ def run(args: argparse.Namespace) -> None:
         f"depth={depth_model.name} input={depth_model.width}x{depth_model.height}; "
         f"detector={detector.name} backend={detector.backend}; open drawer for auto A, close drawer to reset"
     )
+    print(detector.diagnostic_text())
     frames_processed = 0
     before_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="before-detector")
     before_future: Optional[Future[tuple[int, list[list[Detection]], float, Optional[float]]]] = None
@@ -1135,7 +1147,7 @@ def run(args: argparse.Namespace) -> None:
         distance_mm = None
         if layer_sensor is not None:
             try:
-                distance_mm = float(layer_sensor.read_mm())
+                distance_mm, _ = layer_sensor.median_mm(samples=5, delay_s=0.01)
             except RuntimeError:
                 pass
         return capture_id, frame_detections, inference_ms, distance_mm
