@@ -13,6 +13,9 @@ Downloaded artifacts:
 | `yolov8m.pt` | [Ultralytics YOLOv8m](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8m.pt) | `5d4a90cdc7a21786cc59cd19778e9eafff836df9e2da32524737c7ee6efe4fe5` | Mac validation model for full-frame A/B inventory comparison |
 | `coco_labels.txt` | same YOLO repository | `bd17f1ee35d5f3c862a4894605855abbb9dda4b0621fdb0ac4c2c8c7bb7e730a` | 80 labels for the retained YOLO reference |
 | `reference/lp_kws_detection_en.elf` | [NXP low-power KWS assets](https://github.com/nxp-imx-support/nxp-demo-experience-assets) | `57deace46b2dd9f3089ed2dab023d6ec61b9fa53e75e45a67f64bedb4e5da0c2` | English reference only; not used for Mandarin MVP |
+| `moonshine-tiny-onnx-q8/` | [Moonshine Tiny ONNX Community export](https://huggingface.co/onnx-community/moonshine-tiny-ONNX) | See bundle README | 27M English ASR; local Q8 ONNX Runtime benchmark, not the Mandarin KWS runtime |
+| `moonshine_tiny_5s_i8.tflite` | [Moonshine Tiny LiteRT community export](https://huggingface.co/devendradhakad/autodroid-litert-community-moonshine-tiny) | `97abdeea122d579229091659c24c59d988c6419d453a200f6471241a53b9a9b9` | Fixed 5 s encode/decode signatures; float32 encoder plus dynamic-range INT8 decoder; CPU only on i.MX93 (Vela reports 0 NPU operators) |
+| `all-MiniLM-L6-v2-onnx-q8/` | [sentence-transformers all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | `4278337fd0ff3c68bfb6291042cad8ab363e1d9fbc43dcb499fe91c871902474` | 23 MB ARM64 QInt8 English embedding model; ONNX Runtime CPU host-validated, i.MX93 board validation pending |
 
 The Mandarin wake-word/20-class KWS artifact is **not publicly available in
 `Ref/` or the NXP sample assets**. Generate it with the NXP VIT Model

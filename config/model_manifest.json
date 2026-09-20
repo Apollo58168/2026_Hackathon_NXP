@@ -40,11 +40,47 @@
     "note": "The downloaded reference is English-only (12 Speech Commands classes); it cannot satisfy the fixed Mandarin vocabulary."
   },
   "semantic": {
-    "catalog": "semantic_catalog.json",
-    "status": "simulation_fixture_only",
-    "runtime": "precomputed_vectors_only",
-    "semantic_min_score": 0.80,
-    "semantic_min_margin": 0.05
+    "model": "../models/all-MiniLM-L6-v2-onnx-q8/onnx/model_qint8_arm64.onnx",
+    "tokenizer": "../models/all-MiniLM-L6-v2-onnx-q8/tokenizer.json",
+    "catalog": "semantic_catalog_en.json",
+    "vector_cache": "semantic_catalog_en_minilm_q8.npz",
+    "catalog_sha256": "5cbaaff6b91efa3113942010dbfe54d5f0346cabd7942ed76f4d529e20e4ca74",
+    "vector_cache_sha256": "a9e9d310d1660265add52b99f1e3fcee841d16d939c24a845afdc45b240f1608",
+    "catalog_classes": 80,
+    "catalog_phrases": 149,
+    "class_id_contract": "YOLOv8 COCO 0-79",
+    "command_gate": {
+      "script": "../hey_drawer.py",
+      "wake_phrase": "hello",
+      "follow_up_window_seconds": 2.0,
+      "query": "normalized words after wake phrase only",
+      "intent_parser": false
+    },
+    "source": "sentence-transformers/all-MiniLM-L6-v2",
+    "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "sha256": "4278337fd0ff3c68bfb6291042cad8ab363e1d9fbc43dcb499fe91c871902474",
+    "format": "ONNX dynamic QInt8 ARM64",
+    "embedding_dimensions": 384,
+    "status": "host_cpu_validated_board_pending",
+    "runtime": "onnxruntime_cpu_2_threads",
+    "observed_host_query_latency_ms": {
+      "platform": "macOS arm64",
+      "runs": 100,
+      "min": 11.43,
+      "median": 11.69,
+      "p95": 12.04,
+      "max": 12.21
+    },
+    "semantic_min_score": 0.45,
+    "semantic_min_margin": 0.03,
+    "validated_examples": {
+      "hello_remote_to_tv_remote_score": 0.988,
+      "tv_remote_to_remote_score": 0.991,
+      "television_controller_to_remote_score": 0.675,
+      "phone_to_cellphone_score": 0.982,
+      "computer_to_laptop_score": 0.990,
+      "hello_world_rejected": true
+    }
   },
   "thresholds": {
     "stable_frame_count": 3,

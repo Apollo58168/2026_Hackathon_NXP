@@ -16,6 +16,9 @@ __pycache__/
 *.h5
 *.pb
 
+# Local Hugging Face download bookkeeping (model files stay in models/).
+models/**/.cache/
+
 # Generated model bundles/calibration archives.
 deploy/**/model/
 deploy/**/calibration/*.zip
