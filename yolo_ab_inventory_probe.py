@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Auto-open/close drawer probe using depth timing and COCO detection.
 
-A large depth motion means the drawer opened.  After the scene is stable,
-Snapshot A is captured automatically and the COCO detector monitors the open
-drawer.  A second large motion means the drawer is closing; after it becomes
-stable the probe resets and waits for the next open event.
+A large depth motion means the drawer opened. After stable Snapshot A, item
+motion triggers stable Snapshot B and a YOLOv8m inventory comparison. The
+confirmed PUT/TAKE is saved, then the next motion closes and resets the drawer.
 
-This is deliberately an isolated validation probe.  It does not mutate the
-SmartDrawer database or depend on a hand-selected drawer ROI.
+Confirmed PUT/TAKE results are persisted in the probe SQLite inventory by
+VL53L0X layer; no hand-selected drawer ROI is required.
 """
 from __future__ import annotations
 
@@ -42,7 +41,6 @@ from midas_change_crop_probe import (
     Snapshot,
     Thresholds,
     colorize_depth,
-    has_motion,
     is_stable,
     make_snapshot,
     normalize_relative_depth,
@@ -84,9 +82,11 @@ BUTTONS = {
 PHASE_FEEDBACK = {
     "ready_for_a": ("WAITING - Open the drawer to auto-capture A", (0, 180, 255)),
     "capture_a": ("DRAWER OPENED - Waiting for stable Snapshot A", (0, 180, 255)),
-    "collect_before": ("SNAPSHOT A READY - YOLOv8m active; close the drawer when done", (44, 170, 44)),
-    "capture_b": ("DRAWER CLOSING - Waiting for stable close, then reset", (0, 180, 255)),
-    "analyze_b": ("CLOSING COMPLETE - Resetting for the next open", (0, 180, 255)),
+    "collect_before": ("SNAPSHOT A READY - Move one item", (44, 170, 44)),
+    "capture_b": ("ITEM CHANGE SEEN - Waiting for stable Snapshot B", (0, 180, 255)),
+    "analyze_b": ("SNAPSHOT B READY - YOLOv8m deciding PUT or TAKE", (0, 180, 255)),
+    "wait_close": ("RESULT SAVED - Close the drawer", (44, 170, 44)),
+    "closing": ("DRAWER CLOSING - Waiting for stable close", (0, 180, 255)),
     "complete": ("READY FOR NEXT OPEN", (180, 100, 40)),
     "error": ("PROBE FAILED - Review the message, then Reset", (40, 50, 210)),
 }
@@ -277,6 +277,7 @@ class CocoDetector:
         )
         self.name = model_path.name
         self.backend = self.model.backend
+        self.nms_iou = nms_iou
 
     def diagnostic_text(self) -> str:
         input_shape = tuple(int(value) for value in self.model.input["shape"])
@@ -303,16 +304,33 @@ class CocoDetector:
             detections: list[Detection] = []
             for item in self.model.detect(rgb):
                 x, y, width, height = item.box
+                class_id, label = canonical_inventory_class(int(item.class_id), str(item.label))
                 detections.append(
                     Detection(
-                        int(item.class_id),
-                        str(item.label),
+                        class_id,
+                        label,
                         float(item.confidence),
                         (float(x), float(y), float(x + width), float(y + height)),
                     )
                 )
-            all_detections.append(detections)
+            all_detections.append(deduplicate_canonical_detections(detections, self.nms_iou))
         return all_detections, (time.perf_counter() - started) * 1000.0
+
+
+def canonical_inventory_class(class_id: int, label: str) -> tuple[int, str]:
+    return (65, "remote") if label == "keyboard" else (class_id, label)
+
+
+def deduplicate_canonical_detections(detections: Sequence[Detection], nms_iou: float) -> list[Detection]:
+    kept: list[Detection] = []
+    for detection in sorted(detections, key=lambda item: item.confidence, reverse=True):
+        if not any(
+            detection.class_id == previous.class_id
+            and bbox_iou(detection.bbox, previous.bbox) >= nms_iou
+            for previous in kept
+        ):
+            kept.append(detection)
+    return kept
 
 
 def load_enabled_labels(path: Path) -> frozenset[str]:
@@ -333,7 +351,7 @@ def selected_labels(args: argparse.Namespace) -> frozenset[str]:
 
 
 class CocoABProbe:
-    """Manual A, live pre-motion COCO consensus, stable B, inventory diff."""
+    """Automatic four-stage A/B inventory transaction state."""
 
     def __init__(
         self,
@@ -378,6 +396,8 @@ class CocoABProbe:
         self.noise_pixel_p95: Deque[float] = deque(maxlen=thresholds.noise_warmup_frames)
         self.last_median_delta = 0.0
         self.last_ratio = 0.0
+        self.last_motion_median = 0.0
+        self.last_motion_ratio = 0.0
         self.effective_median_limit = thresholds.stable_median
         self.effective_pixel_limit = thresholds.stable_median
 
@@ -398,6 +418,7 @@ class CocoABProbe:
         self.noise_medians.clear()
         self.noise_pixel_p95.clear()
         self.last_median_delta = self.last_ratio = 0.0
+        self.last_motion_median = self.last_motion_ratio = 0.0
         self.effective_median_limit = self.thresholds.stable_median
         self.effective_pixel_limit = self.thresholds.stable_median
 
@@ -423,19 +444,14 @@ class CocoABProbe:
                 float(np.percentile(self.noise_pixel_p95, 90)) * self.thresholds.noise_multiplier,
             )
 
-    def _motion_detected(self, depth: np.ndarray) -> bool:
-        if self.previous is None:
-            return False
-        motion_threshold = max(self.thresholds.motion_median, self.effective_pixel_limit * 2.5)
-        return has_motion(
-            depth,
-            self.previous,
-            Thresholds(
-                stable_median=self.thresholds.stable_median,
-                stable_ratio=self.thresholds.stable_ratio,
-                motion_median=motion_threshold,
-                motion_ratio=self.thresholds.motion_ratio,
-            ),
+    @property
+    def effective_motion_limit(self) -> float:
+        return self.thresholds.motion_median
+
+    def _motion_detected(self) -> bool:
+        return (
+            self.last_motion_median > self.effective_motion_limit
+            or self.last_motion_ratio >= self.thresholds.motion_ratio
         )
 
     def _capture_if_stable(self, frame: np.ndarray, depth: np.ndarray) -> Optional[CapturedBatch]:
@@ -458,7 +474,7 @@ class CocoABProbe:
             return None
         self.frames.append(frame.copy())
         self.depths.append(depth.copy())
-        label = "A" if self.phase == "capture_a" else "close"
+        label = {"capture_a": "A", "capture_b": "B", "closing": "close"}[self.phase]
         self.message = f"Capturing stable {label}: {len(self.depths)}/{self.required}."
         if len(self.depths) != self.required:
             return None
@@ -469,33 +485,59 @@ class CocoABProbe:
         return CapturedBatch(snapshot, frames)
 
     def process(self, frame: np.ndarray, depth: np.ndarray) -> None:
+        if self.previous is not None:
+            self.last_motion_median, self.last_motion_ratio = stability_metrics(
+                depth, self.previous, self.effective_motion_limit
+            )
         if self.phase == "ready_for_a":
-            # Check the event before adding this frame to the noise estimate;
-            # otherwise a large opening motion could inflate its own threshold.
-            opened = self._motion_detected(depth)
-            self._observe_noise(depth)
-            if opened:
-                self.phase = "capture_a"
-                self.frames.clear()
-                self.depths.clear()
-                self.message = f"Drawer opening detected; waiting for stable A (0/{self.required})."
+            # Camera auto-exposure and the depth model are noisy just after
+            # startup/reset. Arm opening detection only after a stable baseline.
+            if len(self.noise_medians) < self.thresholds.noise_warmup_frames:
+                self._observe_noise(depth)
+                count = len(self.noise_medians)
+                self.message = (
+                    "Baseline ready. Open the drawer."
+                    if count >= self.thresholds.noise_warmup_frames
+                    else f"Stabilizing closed-drawer baseline: {count}/{self.thresholds.noise_warmup_frames}. Do not open yet."
+                )
+            else:
+                # Check before updating noise so opening motion cannot inflate
+                # its own adaptive threshold.
+                opened = self._motion_detected()
+                if opened:
+                    self.phase = "capture_a"
+                    self.frames.clear()
+                    self.depths.clear()
+                    self.message = f"Drawer opening detected; waiting for stable A (0/{self.required})."
+                else:
+                    self._observe_noise(depth)
         elif self.phase == "capture_a":
             batch = self._capture_if_stable(frame, depth)
             if batch is not None:
                 self.before_batch = batch
                 self.phase = "collect_before"
                 self.message = "Snapshot A ready. Starting live COCO detector sampling..."
-        elif self.phase == "collect_before" and self._motion_detected(depth):
+        elif self.phase == "collect_before" and self._motion_detected():
             self.phase = "capture_b"
             self.frames.clear()
             self.depths.clear()
             self.message = (
-                f"Drawer closing detected after {len(self.before_observations)} detector frames. "
-                f"Waiting for stable close (0/{self.required}), then resetting."
+                f"Item motion detected after {len(self.before_observations)} detector frames. "
+                f"Remove your hand; waiting for stable B (0/{self.required})."
             )
         elif self.phase == "capture_b":
             batch = self._capture_if_stable(frame, depth)
             if batch is not None:
+                self.after_batch = batch
+                self.phase = "analyze_b"
+                self.message = "Snapshot B captured. Comparing YOLOv8m inventories..."
+        elif self.phase == "wait_close" and self._motion_detected():
+            self.phase = "closing"
+            self.frames.clear()
+            self.depths.clear()
+            self.message = f"Drawer closing detected; waiting for stable close (0/{self.required})."
+        elif self.phase == "closing":
+            if self._capture_if_stable(frame, depth) is not None:
                 self.reset()
                 self.message = "Drawer closed and reset. Waiting for the next opening motion."
         self.previous = depth.copy()
@@ -575,8 +617,8 @@ class CocoABProbe:
         self.after = analysis
         assert self.before is not None
         self.delta = compare_inventories(self.before.inventory, analysis.inventory)
-        self.phase = "complete"
-        self.message = self.delta.message
+        self.phase = "wait_close"
+        self.message = f"{self.delta.message} | layer {self.active_layer or 'unknown'}"
 
 
 def inside(point: tuple[int, int], rectangle: tuple[int, int, int, int]) -> bool:
@@ -602,7 +644,13 @@ def label_row(left: str, right: str, width: int) -> np.ndarray:
     return row
 
 
-def render(frame: np.ndarray, depth: np.ndarray, probe: CocoABProbe, depth_ms: float) -> np.ndarray:
+def render(
+    frame: np.ndarray,
+    depth: np.ndarray,
+    probe: CocoABProbe,
+    depth_ms: float,
+    inventory_by_layer: dict[int, Counter[str]],
+) -> np.ndarray:
     height, width = frame.shape[:2]
     instruction, colour = PHASE_FEEDBACK[probe.phase]
     feedback = np.zeros((FEEDBACK_HEIGHT, width * 2, 3), dtype=np.uint8)
@@ -626,22 +674,43 @@ def render(frame: np.ndarray, depth: np.ndarray, probe: CocoABProbe, depth_ms: f
     )
 
     live_depth = fit_panel(colorize_depth(depth), width, height)
+    motion_now = (
+        probe.last_motion_median > probe.effective_motion_limit
+        or probe.last_motion_ratio >= probe.thresholds.motion_ratio
+    )
+    metric_lines = (
+        f"Depth median: {probe.last_motion_median:.4f} / {probe.effective_motion_limit:.4f}",
+        f"Changed pixels: {probe.last_motion_ratio * 100:.1f}% / {probe.thresholds.motion_ratio * 100:.1f}%",
+    )
+    text_colour = (80, 80, 255) if motion_now else (255, 255, 255)
+    cv2.rectangle(live_depth, (max(0, width - 330), 8), (width - 8, 66), (20, 20, 20), cv2.FILLED)
+    for index, text in enumerate(metric_lines):
+        (text_width, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+        cv2.putText(
+            live_depth,
+            text,
+            (max(8, width - text_width - 16), 29 + index * 27),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            text_colour,
+            1,
+            cv2.LINE_AA,
+        )
     before_view = np.zeros_like(frame) if probe.before is None else fit_panel(probe.before.annotated, width, height)
-    after_view = np.zeros_like(frame)
-    cv2.putText(after_view, "Close drawer", (max(12, width // 4), height // 2 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (180, 180, 180), 2, cv2.LINE_AA)
-    cv2.putText(after_view, "-> auto reset", (max(12, width // 4), height // 2 + 26), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (180, 180, 180), 2, cv2.LINE_AA)
+    after_view = np.zeros_like(frame) if probe.after is None else fit_panel(probe.after.annotated, width, height)
+    if probe.after is None:
+        cv2.putText(after_view, "Waiting for item change", (max(12, width // 5), height // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (180, 180, 180), 2, cv2.LINE_AA)
 
-    footer = np.zeros((104, width * 2, 3), dtype=np.uint8)
+    footer = np.zeros((132, width * 2, 3), dtype=np.uint8)
     before_inventory = Counter() if probe.before is None else probe.before.inventory
     lines = [
-        f"A detector: {format_inventory(before_inventory)}  |  Layer: {probe.active_layer or 'unknown'}",
-        "Lifecycle: open -> Snapshot A + VL53 layer -> detect -> close -> reset",
+        f"LAYER 1: {format_inventory(inventory_by_layer[1])}",
+        f"LAYER 2: {format_inventory(inventory_by_layer[2])}",
+        f"Snapshot A: {format_inventory(before_inventory)}  | active layer: {probe.active_layer or 'unknown'}",
         "Status: detector active" if probe.phase == "collect_before" else probe.message,
     ]
-    if probe.before is not None:
-        lines[0] += f"  ({probe.before.inference_ms:.0f} ms / {probe.before.frames_analyzed} frames)"
     for index, line in enumerate(lines):
-        cv2.putText(footer, line[:180], (12, 27 + index * 31), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (225, 225, 225), 1, cv2.LINE_AA)
+        cv2.putText(footer, line[:180], (12, 25 + index * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (225, 225, 225), 1, cv2.LINE_AA)
 
     return np.vstack(
         (
@@ -649,7 +718,7 @@ def render(frame: np.ndarray, depth: np.ndarray, probe: CocoABProbe, depth_ms: f
             header,
             label_row("Live RGB", "Live depth (capture timing only)", width),
             np.hstack((frame, live_depth)),
-            label_row("Snapshot A - YOLOv8m detector consensus", "Drawer close -> automatic reset", width),
+            label_row("Snapshot A - before", "Snapshot B - after", width),
             np.hstack((before_view, after_view)),
             footer,
         )
@@ -695,6 +764,77 @@ def save_result(output_dir: Path, probe: CocoABProbe) -> Optional[Path]:
     return run_dir
 
 
+def open_inventory_storage(path: Path, profiles: LayerProfiles):
+    from core import LayerCalibration
+    from ssdlite_detector import COCO_LABELS
+    from storage import Storage
+
+    storage = Storage(path)
+    model_catalog = {class_id: label for class_id, label in enumerate(COCO_LABELS)}
+    storage.seed_catalog(model_catalog.items())
+    database_catalog = {
+        int(row["class_id"]): str(row["canonical_label"])
+        for row in storage.catalog_rows()
+        if int(row["enabled"])
+    }
+    if database_catalog != model_catalog:
+        storage.close()
+        raise RuntimeError("database item catalog does not match the YOLOv8 COCO model")
+    for layer, baseline in profiles.distances_mm.items():
+        storage.save_calibration(
+            LayerCalibration(
+                layer_no=layer,
+                bottom_depth_baseline=baseline,
+                drawer_mask=((True,),),
+                interior_mask=((True,),),
+                open_threshold=profiles.tolerance_mm,
+                close_threshold=profiles.tolerance_mm,
+            )
+        )
+    storage.check_integrity()
+    return storage
+
+
+def load_database_inventory(storage) -> dict[int, Counter[str]]:
+    inventory = {1: Counter(), 2: Counter()}
+    for row in storage.inventory_rows():
+        layer = int(row["layer_no"])
+        if layer in inventory:
+            inventory[layer][str(row["canonical_label"])] = int(row["quantity"])
+    return inventory
+
+
+def commit_probe_transaction(storage, probe: CocoABProbe) -> bool:
+    from core import Candidate, Crop
+
+    if probe.delta is None or probe.delta.action not in {"put_in", "take_out"}:
+        return False
+    if probe.active_layer not in {1, 2} or probe.delta.item is None:
+        raise RuntimeError("cannot save transaction without a known drawer layer and item")
+    source = probe.after if probe.delta.action == "put_in" else probe.before
+    assert source is not None
+    matches = [item for item in source.detections if item.name == probe.delta.item]
+    if not matches:
+        raise RuntimeError(f"no YOLO detection found for {probe.delta.item}")
+    detection = max(matches, key=lambda item: item.confidence)
+    x0, y0, x1, y1 = detection.bbox
+    magnitude = float(np.mean(np.abs(probe.after.batch.snapshot.depth - probe.before.batch.snapshot.depth)))
+    action = "put" if probe.delta.action == "put_in" else "take"
+    storage.commit_candidate(
+        Candidate(
+            layer_no=probe.active_layer,
+            action=action,
+            class_id=detection.class_id,
+            canonical_label=detection.name,
+            confidence=detection.confidence,
+            signed_depth_change=magnitude if action == "put" else -magnitude,
+            crop=Crop(round(x0), round(y0), max(1, round(max(x1 - x0, y1 - y0))), "snapshot-ab"),
+        )
+    )
+    probe.message = f"{action.upper()} {detection.name} {'->' if action == 'put' else '<-'} LAYER {probe.active_layer} | saved"
+    return True
+
+
 def self_test() -> None:
     def item(class_id: int, name: str, box: tuple[float, float, float, float], confidence: float = 0.9) -> Detection:
         return Detection(class_id, name, confidence, box)
@@ -731,16 +871,31 @@ def self_test() -> None:
     assert removed.action == "take_out" and removed.item == "bottle"
     assert compare_inventories(Counter({"cup": 1}), Counter({"cup": 1})).action == "no_change"
     assert compare_inventories(Counter({"cup": 1}), Counter({"bottle": 1})).action == "ambiguous"
+    assert canonical_inventory_class(66, "keyboard") == (65, "remote")
+    assert canonical_inventory_class(64, "mouse") == (64, "mouse")
+    aliases = deduplicate_canonical_detections(
+        [item(65, "remote", (10, 10, 30, 30), 0.9), item(65, "remote", (11, 10, 31, 30), 0.8)],
+        0.4,
+    )
+    assert len(aliases) == 1
 
     thresholds = Thresholds()
     profiles = LayerProfiles({1: 120.0, 2: 320.0}, 60.0)
     assert profiles.match(125.0) == 1 and profiles.match(300.0) == 2 and profiles.match(220.0) is None
     probe = CocoABProbe(3, thresholds, 3, 0.80, 2 / 3, 0.4, profiles)
+    probe.last_motion_median = thresholds.motion_median + 0.001
+    assert probe._motion_detected()
+    probe.last_motion_median = 0.0
+    probe.last_motion_ratio = thresholds.motion_ratio
+    assert probe._motion_detected()  # Either metric independently triggers motion.
+    probe.last_motion_ratio = 0.0
     frame = np.zeros((48, 64, 3), dtype=np.uint8)
     depth_a = np.full((16, 16), 0.5, dtype=np.float32)
     depth_b = depth_a.copy()
     depth_b[4:12, 4:12] += 0.20
-    probe.process(frame, depth_a)  # live preview establishes the closed predecessor
+    for _ in range(thresholds.noise_warmup_frames + 1):
+        probe.process(frame, depth_a)
+    assert probe.phase == "ready_for_a"  # Baseline warm-up must not auto-capture.
     depth_open = depth_a + 0.20
     probe.process(frame, depth_open)  # large motion opens the drawer
     assert probe.phase == "capture_a"
@@ -751,6 +906,13 @@ def self_test() -> None:
     class FakeDetector:
         def detect(self, selected: Sequence[np.ndarray]) -> tuple[list[list[Detection]], float]:
             return [[item(41, "cup", (10, 10, 30, 30))] for _ in selected], 1.0
+
+    class AfterDetector:
+        def detect(self, selected: Sequence[np.ndarray]) -> tuple[list[list[Detection]], float]:
+            return [
+                [item(41, "cup", (10, 10, 30, 30)), item(65, "remote", (32, 10, 52, 30))]
+                for _ in selected
+            ], 1.0
 
     fake_detector = FakeDetector()
     for distance_mm in (122.0, 318.0, 318.0, 318.0, 318.0):
@@ -764,6 +926,20 @@ def self_test() -> None:
     probe.finalize_before()
     for _ in range(3):
         probe.process(frame, depth_b)
+    assert probe.phase == "analyze_b"
+    probe.analyze_pending(AfterDetector())
+    assert probe.phase == "wait_close" and probe.delta is not None
+    assert probe.delta.action == "put_in" and probe.delta.item == "remote"
+    storage = open_inventory_storage(Path(":memory:"), profiles)
+    try:
+        assert commit_probe_transaction(storage, probe)
+        assert storage.inventory(1, 65) == 1
+    finally:
+        storage.close()
+    probe.process(frame, depth_a)
+    assert probe.phase == "closing"
+    for _ in range(3):
+        probe.process(frame, depth_a)
     assert probe.phase == "ready_for_a" and probe.before is None
     print("yolo_ab_inventory_probe: self-test OK")
 
@@ -803,16 +979,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--avfoundation", action="store_true")
     parser.add_argument("--max-frames", type=int, default=0, help="0 runs until q/Esc")
     parser.add_argument("--no-display", action="store_true")
-    parser.add_argument("--stable-frames", type=int, default=5)
-    parser.add_argument("--stable-median", type=float, default=Thresholds.stable_median)
+    parser.add_argument("--stable-frames", type=int, default=10)
+    parser.add_argument("--stable-median", type=float, default=0.03)
     parser.add_argument("--stable-ratio", type=float, default=Thresholds.stable_ratio)
-    parser.add_argument("--motion-median", type=float, default=Thresholds.motion_median)
-    parser.add_argument("--motion-ratio", type=float, default=Thresholds.motion_ratio)
+    parser.add_argument("--motion-median", type=float, default=0.10)
+    parser.add_argument("--motion-ratio", type=float, default=1)
     parser.add_argument("--noise-multiplier", type=float, default=Thresholds.noise_multiplier)
-    parser.add_argument("--noise-warmup-frames", type=int, default=Thresholds.noise_warmup_frames)
+    parser.add_argument("--noise-warmup-frames", type=int, default=20)
     parser.add_argument("--bilateral-diameter", type=int, default=5)
     parser.add_argument("--bilateral-sigma", type=float, default=0.08)
     parser.add_argument("--output-dir", type=Path, default=Path("captures/yolo-ab-probe"))
+    parser.add_argument("--database", type=Path, default=Path("/root/yolo-ab-probe/inventory.db"))
     parser.add_argument("--vl53-device", default="/dev/i2c-0")
     parser.add_argument("--vl53-address", type=lambda value: int(value, 0), default=0x29)
     parser.add_argument("--vl53-calibration", type=Path, default=Path("/root/vl53l0x_layers.json"))
@@ -1089,6 +1266,10 @@ def run(args: argparse.Namespace) -> None:
         args.detector_delegate or None,
     )
     layer_sensor, layer_profiles = open_layer_sensor(args)
+    if layer_profiles is None:
+        raise RuntimeError("the four-stage inventory workflow requires VL53 layer calibration")
+    storage = open_inventory_storage(args.database, layer_profiles)
+    inventory_by_layer = load_database_inventory(storage)
     thresholds = Thresholds(
         stable_median=args.stable_median,
         stable_ratio=args.stable_ratio,
@@ -1193,7 +1374,7 @@ def run(args: argparse.Namespace) -> None:
 
             key = -1
             if not args.no_display:
-                cv2.imshow(window, render(frame, depth, probe, depth_ms))
+                cv2.imshow(window, render(frame, depth, probe, depth_ms, inventory_by_layer))
                 key = cv2.waitKey(1) & 0xFF
             try:
                 if probe.phase == "collect_before":
@@ -1203,6 +1384,12 @@ def run(args: argparse.Namespace) -> None:
                         before_future = before_executor.submit(detect_before, frame.copy(), probe.capture_id)
                 elif probe.phase == "analyze_b":
                     probe.analyze_pending(detector)
+                    if probe.active_layer is None and layer_sensor is not None:
+                        distance_mm, _ = layer_sensor.median_mm(samples=5, delay_s=0.01)
+                        probe.last_distance_mm = distance_mm
+                        probe.active_layer = layer_profiles.match(distance_mm)
+                    commit_probe_transaction(storage, probe)
+                    inventory_by_layer = load_database_inventory(storage)
             except Exception as error:
                 probe.phase = "error"
                 probe.message = f"Detector analysis failed: {error}"
@@ -1219,6 +1406,7 @@ def run(args: argparse.Namespace) -> None:
         capture.release()
         if layer_sensor is not None:
             layer_sensor.close()
+        storage.close()
         if not args.no_display:
             cv2.destroyAllWindows()
 

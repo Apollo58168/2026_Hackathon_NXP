@@ -87,7 +87,7 @@ class DistanceSensor:
         for _ in range(samples * 5):
             try:
                 values.append(self.read_mm())
-            except RuntimeError:
+            except (OSError, RuntimeError):
                 pass
             if len(values) == samples:
                 break

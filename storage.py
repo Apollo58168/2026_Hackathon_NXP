@@ -256,6 +256,13 @@ class Storage:
             )
         return event_id
 
+    def catalog_rows(self) -> list[sqlite3.Row]:
+        return list(
+            self.connection.execute(
+                "SELECT class_id, canonical_label, enabled FROM item_catalog ORDER BY class_id"
+            )
+        )
+
     def inventory_rows(self) -> list[sqlite3.Row]:
         return list(
             self.connection.execute(
