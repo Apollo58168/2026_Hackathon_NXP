@@ -15,7 +15,7 @@ and keep it at the path above before deployment.
 Run a text-only check from the repository root:
 
 ```bash
-uv run python semantic_embedding_probe.py phone
+uv run python -m smart_drawer.semantic_embedding_probe phone
 ```
 
 Run Moonshine and semantic mapping together:
@@ -28,7 +28,7 @@ uv run python moonshine_onnx_probe.py \
 Run the wake-gated microphone loop (no intent parser):
 
 ```bash
-uv run python hey_drawer.py
+uv run python -m smart_drawer.hey_drawer
 ```
 
 It only accepts words after the exact normalized wake phrase. For example,
@@ -57,11 +57,11 @@ keyboard -> remote (COCO class 65)
 After editing aliases, rebuild the vector database:
 
 ```bash
-uv run python semantic_embedding_probe.py --rebuild-cache "tv remote"
+uv run python -m smart_drawer.semantic_embedding_probe --rebuild-cache "tv remote"
 ```
 
 On i.MX93 this graph is for ONNX Runtime on the two Cortex-A55 cores. It is
 not a Vela/Ethos-U graph. Install or use NXP's ONNX Runtime build plus NumPy
-and `tokenizers`, then copy this directory, `semantic_embedding.py`,
-`semantic_embedding_probe.py`, `config/semantic_catalog_en.json`, and the
+and `tokenizers`, then copy this directory, the `smart_drawer` package,
+`config/semantic_catalog_en.json`, and the
 precomputed `.npz` vector database to the target.

@@ -14,7 +14,7 @@ Downloaded artifacts:
 | `moonshine_tiny_5s_i8.tflite` | [Moonshine Tiny LiteRT](https://huggingface.co/devendradhakad/autodroid-litert-community-moonshine-tiny) | `97abdeea122d579229091659c24c59d988c6419d453a200f6471241a53b9a9b9` | English ASR on CPU; downloaded locally and ignored by Git |
 | `all-MiniLM-L6-v2-onnx-q8/onnx/model_qint8_arm64.onnx` | [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | `4278337fd0ff3c68bfb6291042cad8ab363e1d9fbc43dcb499fe91c871902474` | English embedding model on ONNX Runtime CPU; downloaded locally and ignored by Git |
 
-`yolo_ab_inventory_probe.py` runs voice inference in a background thread and
+`python -m smart_drawer.yolo_ab_inventory_probe` runs voice inference in a background thread and
 accepts queries only while the drawer is in `ready_for_a`. Both spoken
 `keyboard` and detector class `keyboard` resolve to canonical `remote` (COCO
 class 65), then `Storage.query_item()` returns and highlights matching layers.
@@ -39,8 +39,8 @@ Hardware entry point:
 ```bash
 fuser -k /dev/video2 2>/dev/null || true
 XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY=wayland-0 \
-  python3 /root/midas_nnstreamer.py --camera /dev/video2 \
-  --model /root/midas_2_1_small_int8_vela.tflite
+  python3 -m smart_drawer.midas_nnstreamer --camera /dev/video2 \
+  --model models/midas_v2_1_small_quant_vela.tflite
 ```
 
 `START INIT` clears the two-layer SQLite calibration/inventory and records the
