@@ -701,16 +701,26 @@ def render(
     if probe.after is None:
         cv2.putText(after_view, "Waiting for item change", (max(12, width // 5), height // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (180, 180, 180), 2, cv2.LINE_AA)
 
-    footer = np.zeros((132, width * 2, 3), dtype=np.uint8)
+    footer = np.zeros((154, width * 2, 3), dtype=np.uint8)
     before_inventory = Counter() if probe.before is None else probe.before.inventory
-    lines = [
-        f"LAYER 1: {format_inventory(inventory_by_layer[1])}",
-        f"LAYER 2: {format_inventory(inventory_by_layer[2])}",
-        f"Snapshot A: {format_inventory(before_inventory)}  | active layer: {probe.active_layer or 'unknown'}",
-        "Status: detector active" if probe.phase == "collect_before" else probe.message,
-    ]
-    for index, line in enumerate(lines):
-        cv2.putText(footer, line[:180], (12, 25 + index * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (225, 225, 225), 1, cv2.LINE_AA)
+    for layer, left in ((1, 6), (2, width + 6)):
+        border = (80, 220, 120) if probe.active_layer == layer else (105, 105, 105)
+        cv2.rectangle(footer, (left, 6), (left + width - 12, 91), border, 4 if probe.active_layer == layer else 2)
+        cv2.putText(footer, f"LAYER {layer}", (left + 14, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.78, border, 2, cv2.LINE_AA)
+        inventory_text = format_inventory(inventory_by_layer[layer])
+        cv2.putText(footer, inventory_text, (left + 14, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.90, (255, 255, 255), 2, cv2.LINE_AA)
+    status = "Detector active" if probe.phase == "collect_before" else probe.message
+    cv2.putText(
+        footer,
+        f"Snapshot A: {format_inventory(before_inventory)} | active layer: {probe.active_layer or 'unknown'}",
+        (12, 118),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.54,
+        (210, 210, 210),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(footer, status[:180], (12, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (225, 225, 225), 1, cv2.LINE_AA)
 
     return np.vstack(
         (
